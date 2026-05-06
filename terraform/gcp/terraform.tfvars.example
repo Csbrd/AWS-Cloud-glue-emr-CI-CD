@@ -9,7 +9,7 @@ gcs_bucket    = "lifesync-data-lake"
 aws_s3_bucket = "<AWS_S3_CURATED_BUCKET>"    # 예: lifesync-dev-06-s3-curatedbucket-xxxxxxxx
 
 # ── 01 Networking ─────────────────────────────────────────────────────────────
-subnet_primary_cidr = "172.16.1.0/24"        # GCP VPC 서브넷 CIDR (변경 금지)
+subnet_primary_cidr = "192.168.20.0/24"       # GCP VPC 서브넷 CIDR
 
 # AWS Transit Gateway VPN Outside IP (AWS 콘솔 > Site-to-Site VPN > 터널 세부 정보에서 확인)
 aws_tgw_ip_1 = "<AWS_TGW_VPN_OUTSIDE_IP_1>"

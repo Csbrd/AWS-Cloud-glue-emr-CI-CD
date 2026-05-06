@@ -21,7 +21,7 @@ variable "aws_s3_bucket" {
 # ── 01 Networking ──────────────────────────────────────────────────────────────
 variable "subnet_primary_cidr" {
   type    = string
-  default = "172.16.1.0/24"
+  default = "192.168.20.0/24"
 }
 
 variable "gcp_bgp_asn" {
