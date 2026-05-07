@@ -1,10 +1,3 @@
-# ── Artifact Registry ─────────────────────────────────────────────────────────
-resource "google_artifact_registry_repository" "cloudrun" {
-  repository_id = "lifesync"
-  location      = var.region
-  format        = "DOCKER"
-}
-
 # ── Cloud Run — predict-runner ────────────────────────────────────────────────
 resource "google_cloud_run_v2_service" "predict_runner" {
   count    = var.predict_runner_image != "" ? 1 : 0
@@ -98,7 +91,7 @@ resource "google_cloud_run_v2_service" "sender" {
 
 # ── Outputs ───────────────────────────────────────────────────────────────────
 output "artifact_registry_url" {
-  value = "${var.region}-docker.pkg.dev/${var.project_id}/${google_artifact_registry_repository.cloudrun.repository_id}"
+  value = "${var.region}-docker.pkg.dev/${var.project_id}/lifesync"
 }
 
 output "predict_runner_uri" {
