@@ -27,7 +27,7 @@ resource "google_compute_global_address" "psc_google_apis" {
   address_type = "INTERNAL"
   purpose      = "PRIVATE_SERVICE_CONNECT"
   network      = google_compute_network.vpc.id
-  address      = "192.168.20.2"
+  address      = "10.200.0.2"
 }
 
 resource "google_compute_global_forwarding_rule" "psc_google_apis" {

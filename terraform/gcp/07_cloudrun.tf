@@ -5,9 +5,38 @@ resource "google_artifact_registry_repository" "cloudrun" {
   format        = "DOCKER"
 }
 
+# ── Docker Build & Push ───────────────────────────────────────────────────────
+resource "null_resource" "docker_push" {
+  depends_on = [google_artifact_registry_repository.cloudrun]
+
+  triggers = {
+    registry_id = google_artifact_registry_repository.cloudrun.id
+  }
+
+  provisioner "local-exec" {
+    interpreter = ["bash", "-c"]
+    command     = <<-EOT
+      gcloud auth configure-docker ${var.region}-docker.pkg.dev --quiet
+
+      docker build \
+        -f ../../scripts/cloudrun/Dockerfile \
+        -t ${var.predict_runner_image} \
+        ../../scripts/cloudrun/
+      docker push ${var.predict_runner_image}
+
+      docker build \
+        -f ../../scripts/cloudrun/Dockerfile.sender \
+        -t ${var.sender_image} \
+        ../../scripts/cloudrun/
+      docker push ${var.sender_image}
+    EOT
+  }
+}
+
 # ── Cloud Run — predict-runner ────────────────────────────────────────────────
 resource "google_cloud_run_v2_service" "predict_runner" {
-  count    = var.predict_runner_image != "" ? 1 : 0
+  count      = var.predict_runner_image != "" ? 1 : 0
+  depends_on = [null_resource.docker_push]
   name     = "lifesync-predict-runner"
   location = var.region
   ingress  = "INGRESS_TRAFFIC_ALL"
@@ -52,7 +81,8 @@ resource "google_cloud_run_v2_service" "predict_runner" {
 
 # ── Cloud Run — sender ────────────────────────────────────────────────────────
 resource "google_cloud_run_v2_service" "sender" {
-  count    = var.sender_image != "" ? 1 : 0
+  count      = var.sender_image != "" ? 1 : 0
+  depends_on = [null_resource.docker_push]
   name     = "lifesync-sender"
   location = var.region
   ingress  = "INGRESS_TRAFFIC_ALL"
