@@ -1,0 +1,8 @@
+xgboost==1.7.6
+google-cloud-bigquery==3.21.0
+google-cloud-bigquery-storage==2.25.0
+google-cloud-storage==2.17.0
+google-cloud-aiplatform==1.57.0
+pandas==2.2.2
+scikit-learn==1.4.2
+pyarrow==16.1.0
