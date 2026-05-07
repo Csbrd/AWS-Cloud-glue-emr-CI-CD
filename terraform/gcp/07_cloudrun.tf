@@ -10,13 +10,14 @@ resource "null_resource" "docker_push" {
   depends_on = [google_artifact_registry_repository.cloudrun]
 
   triggers = {
-    registry_id = google_artifact_registry_repository.cloudrun.id
+    registry_id     = google_artifact_registry_repository.cloudrun.id
+    login_method    = "access-token"
   }
 
   provisioner "local-exec" {
     interpreter = ["bash", "-c"]
     command     = <<-EOT
-      gcloud auth configure-docker ${var.region}-docker.pkg.dev --quiet
+      gcloud auth print-access-token | docker login -u oauth2accesstoken --password-stdin ${var.region}-docker.pkg.dev
 
       docker build \
         -f ../../scripts/cloudrun/Dockerfile \
