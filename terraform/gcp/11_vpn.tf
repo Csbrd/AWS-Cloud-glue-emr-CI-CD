@@ -65,7 +65,7 @@ resource "google_compute_router_interface" "if_1" {
   name       = "lifesync-router-if-1"
   router     = google_compute_router.main.name
   region     = var.region
-  ip_range   = "169.254.203.38/30"
+  ip_range   = "169.254.149.34/30"
   vpn_tunnel = google_compute_vpn_tunnel.tunnel_1.name
 }
 
@@ -73,7 +73,7 @@ resource "google_compute_router_peer" "peer_1" {
   name                      = "lifesync-bgp-peer-1"
   router                    = google_compute_router.main.name
   region                    = var.region
-  peer_ip_address           = "169.254.203.37"
+  peer_ip_address           = "169.254.149.33"
   peer_asn                  = var.aws_bgp_asn
   advertised_route_priority = 100
   interface                 = google_compute_router_interface.if_1.name
@@ -83,7 +83,7 @@ resource "google_compute_router_interface" "if_2" {
   name       = "lifesync-router-if-2"
   router     = google_compute_router.main.name
   region     = var.region
-  ip_range   = "169.254.195.182/30"
+  ip_range   = "169.254.185.50/30"
   vpn_tunnel = google_compute_vpn_tunnel.tunnel_2.name
 }
 
@@ -91,7 +91,7 @@ resource "google_compute_router_peer" "peer_2" {
   name                      = "lifesync-bgp-peer-2"
   router                    = google_compute_router.main.name
   region                    = var.region
-  peer_ip_address           = "169.254.195.181"
+  peer_ip_address           = "169.254.185.49"
   peer_asn                  = var.aws_bgp_asn
   advertised_route_priority = 100
   interface                 = google_compute_router_interface.if_2.name

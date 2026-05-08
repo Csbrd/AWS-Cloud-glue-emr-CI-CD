@@ -51,7 +51,6 @@ XGB_PARAMS = {
     "max_depth":     6,
     "learning_rate": 0.05,
     "subsample":     0.8,
-    "use_label_encoder": False,
     "eval_metric":   "logloss",
     "random_state":  42,
 }
@@ -115,6 +114,8 @@ def train_vip(df: pd.DataFrame) -> str:
     model = _train_classifier(X_tr, X_te, y_tr, y_te, "VIP")
 
     with tempfile.NamedTemporaryFile(suffix=".bst", delete=False) as f:
+        model.get_booster().feature_names = None
+        model.get_booster().feature_types = None
         model.save_model(f.name)
         uri = _upload_model(f.name, "vip")
     return _register_model("lifesync-vip-model", uri)
@@ -128,6 +129,8 @@ def train_signup(df: pd.DataFrame) -> str:
     model = _train_classifier(X_tr, X_te, y_tr, y_te, "Signup")
 
     with tempfile.NamedTemporaryFile(suffix=".bst", delete=False) as f:
+        model.get_booster().feature_names = None
+        model.get_booster().feature_types = None
         model.save_model(f.name)
         uri = _upload_model(f.name, "signup")
     return _register_model("lifesync-signup-model", uri)
@@ -150,6 +153,8 @@ def train_health(df: pd.DataFrame) -> str:
     print(f"  [Health] Accuracy={acc:.4f}  Classes={list(le.classes_)}")
 
     with tempfile.NamedTemporaryFile(suffix=".bst", delete=False) as f:
+        model.get_booster().feature_names = None
+        model.get_booster().feature_types = None
         model.save_model(f.name)
         uri = _upload_model(f.name, "health")
     return _register_model("lifesync-health-model", uri)
@@ -163,6 +168,8 @@ def train_rec(df: pd.DataFrame) -> str:
     model = _train_classifier(X_tr, X_te, y_tr, y_te, "Rec")
 
     with tempfile.NamedTemporaryFile(suffix=".bst", delete=False) as f:
+        model.get_booster().feature_names = None
+        model.get_booster().feature_types = None
         model.save_model(f.name)
         uri = _upload_model(f.name, "rec")
     return _register_model("lifesync-rec-model", uri)

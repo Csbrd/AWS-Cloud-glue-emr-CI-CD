@@ -9,13 +9,10 @@ resource "google_cloud_scheduler_job" "predict_runner" {
   region           = var.region
   schedule         = "0 4 * * *"
   time_zone        = "Asia/Seoul"
-  attempt_deadline = "300s"
+  attempt_deadline = "60s"
 
   retry_config {
-    retry_count          = 3
-    min_backoff_duration = "60s"
-    max_backoff_duration = "300s"
-    max_retry_duration   = "900s"
+    retry_count = 0
   }
 
   http_target {

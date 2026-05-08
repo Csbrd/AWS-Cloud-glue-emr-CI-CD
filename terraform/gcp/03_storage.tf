@@ -5,6 +5,7 @@ resource "google_storage_bucket" "data_lake" {
   storage_class               = "STANDARD"
   uniform_bucket_level_access = true
   public_access_prevention    = "enforced"
+  force_destroy               = true
 
   # 30일 이후 접근 빈도 낮아지므로 Nearline으로 전환
   lifecycle_rule {

@@ -66,7 +66,35 @@ def dynamic_score():
         return jsonify({"error": str(exc)}), 500
 
 
+NUMERIC_FEATURES = [
+    "age",
+    "bank_txn_count", "bank_total_amount", "bank_avg_amount", "latest_balance",
+    "card_txn_count", "card_total_spend", "card_avg_spend",
+    "invest_total", "securities_trade_count",
+    "insurance_premium", "has_online_insurance",
+    "hospital_visit_count", "health_score", "bmi",
+    "avg_heart_rate", "avg_steps",
+    "lifesync_score",
+]
+
+
+def _ensure_feature_table():
+    """배치 예측용 피처 테이블 생성 (FLOAT64 캐스팅 + NULL→0, XGBoost 컨테이너 호환)"""
+    bq = bigquery.Client(project=PROJECT_ID)
+    cols = ", ".join(
+        [f"COALESCE(CAST({c} AS FLOAT64), 0.0) AS {c}" for c in NUMERIC_FEATURES]
+    )
+    query = f"""
+        CREATE OR REPLACE TABLE `{PROJECT_ID}.lifesync_curated.ai_feature_pred` AS
+        SELECT {cols}
+        FROM `{PROJECT_ID}.lifesync_curated.ai_feature_table`
+    """
+    bq.query(query).result()
+    log.info("[_ensure_feature_table] 테이블 생성 완료")
+
+
 def _run_batch_prediction(date_str: str):
+    _ensure_feature_table()
     from google.cloud import aiplatform
     aiplatform.init(project=PROJECT_ID, location=REGION)
     job = aiplatform.BatchPredictionJob.create(
@@ -74,11 +102,14 @@ def _run_batch_prediction(date_str: str):
         model_name=MODEL_RESOURCE_NAME,
         instances_format="bigquery",
         predictions_format="bigquery",
-        bigquery_source=f"bq://{PROJECT_ID}.lifesync_curated.ai_feature_table",
+        bigquery_source=f"bq://{PROJECT_ID}.lifesync_curated.ai_feature_pred",
         bigquery_destination_prefix=f"bq://{PROJECT_ID}.lifesync_ml.prediction_results",
-        sync=True,
+        machine_type="n1-standard-4",
+        starting_replica_count=1,
+        max_replica_count=2,
+        sync=False,
     )
-    log.info("[_run_batch_prediction] 완료: %s", job.display_name)
+    log.info("[_run_batch_prediction] job 제출 완료")
 
 
 def _write_mock_predictions():
@@ -103,7 +134,6 @@ def _refresh_serving_table():
         CREATE OR REPLACE TABLE `{PROJECT_ID}.lifesync_serving.customer_recommendations` AS
         SELECT *
         FROM `{PROJECT_ID}.lifesync_ml.prediction_results`
-        WHERE DATE(prediction_time, "Asia/Seoul") = CURRENT_DATE("Asia/Seoul")
     """
     bq.query(query).result()
     log.info("[_refresh_serving_table] 완료")

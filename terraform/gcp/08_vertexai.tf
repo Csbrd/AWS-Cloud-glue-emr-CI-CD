@@ -1,22 +1,3 @@
-# ── Vertex AI Dataset ─────────────────────────────────────────────────────────
-resource "google_vertex_ai_dataset" "customer_features" {
-  display_name        = "lifesync-customer-features"
-  metadata_schema_uri = "gs://google-cloud-aiplatform/schema/dataset/metadata/tabular_1.0.0.yaml"
-  region              = var.region
-}
-
-# ── Vertex AI Endpoint ────────────────────────────────────────────────────────
-resource "google_vertex_ai_endpoint" "predict" {
-  name         = "lifesync-predict-endpoint"
-  display_name = "LifeSync360 Predict Endpoint"
-  location     = var.region
-}
-
-# ── Outputs ───────────────────────────────────────────────────────────────────
-output "vertex_dataset_id" {
-  value = google_vertex_ai_dataset.customer_features.id
-}
-
-output "vertex_endpoint_id" {
-  value = google_vertex_ai_endpoint.predict.id
-}
+# Vertex AI 리소스는 train.py로 모델 학습 후 Model Registry에 직접 등록
+# BatchPredictionJob은 predict_runner.py(Cloud Run)에서 직접 호출
+# → 별도 Dataset / Endpoint 리소스 불필요

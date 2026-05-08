@@ -55,6 +55,13 @@ resource "google_project_iam_member" "predict_runner_bq_job_user" {
   member  = "serviceAccount:${google_service_account.predict_runner.email}"
 }
 
+# predict-runner SA: BigQuery 데이터 읽기·쓰기 (뷰 생성 + 서빙 테이블 쓰기)
+resource "google_project_iam_member" "predict_runner_bq_data_editor" {
+  project = var.project_id
+  role    = "roles/bigquery.dataEditor"
+  member  = "serviceAccount:${google_service_account.predict_runner.email}"
+}
+
 # sender SA: BigQuery 잡 실행 (서빙 뷰 조회)
 resource "google_project_iam_member" "sender_bq_job_user" {
   project = var.project_id
@@ -80,6 +87,13 @@ resource "google_project_iam_member" "vertexai_aiplatform_user" {
 resource "google_project_iam_member" "vertexai_bq_job_user" {
   project = var.project_id
   role    = "roles/bigquery.jobUser"
+  member  = "serviceAccount:${google_service_account.vertexai.email}"
+}
+
+# Vertex AI SA: BigQuery 데이터 읽기·쓰기 (피처 뷰 읽기 + 예측 결과 쓰기)
+resource "google_project_iam_member" "vertexai_bq_data_editor" {
+  project = var.project_id
+  role    = "roles/bigquery.dataEditor"
   member  = "serviceAccount:${google_service_account.vertexai.email}"
 }
 
