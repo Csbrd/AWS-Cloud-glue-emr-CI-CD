@@ -1,0 +1,79 @@
+name: Data Pipeline CI/CD
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "scripts/glue/**"
+      - "scripts/emr/**"
+      - "scripts/lambda/**"
+      - "buildspec.yml"
+      - ".github/workflows/data_cicd.yml"
+
+jobs:
+  unit-test:
+    name: Unit Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install test dependencies
+        run: |
+          pip install pytest pytest-mock moto[s3,dynamodb,kinesis] boto3 psycopg2-binary redis
+
+      - name: Run Lambda unit tests
+        run: pytest scripts/lambda/tests/ -v
+
+  security-scan:
+    name: Security Scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Bandit
+        run: |
+          pip install bandit
+          bandit -r scripts/lambda/ scripts/glue/ scripts/emr/ -ll -x scripts/lambda/tests/
+
+      - name: pip-audit
+        run: |
+          pip install pip-audit
+          pip-audit -r scripts/cloudrun/requirements.txt
+
+  deploy:
+    name: Deploy to CodeCommit
+    needs: [unit-test, security-scan]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ap-northeast-2
+
+      - name: Mirror to CodeCommit
+        run: |
+          git config --global credential.helper '!aws codecommit credential-helper $@'
+          git config --global credential.UseHttpPath true
+          git remote add codecommit https://git-codecommit.ap-northeast-2.amazonaws.com/v1/repos/lifesync-data-prod
+          git push codecommit HEAD:main --force

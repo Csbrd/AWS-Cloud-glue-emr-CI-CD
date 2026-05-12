@@ -2,7 +2,7 @@ import os
 import sys
 from pyspark.sql import SparkSession
 from pyspark.sql import functions as F
-from pyspark.sql.functions import col, lit, when
+from pyspark.sql.functions import col, lit, when, greatest
 
 BATCH_DATE = os.environ.get("BATCH_DATE")
 if not BATCH_DATE:
@@ -10,7 +10,7 @@ if not BATCH_DATE:
     sys.exit(1)
 
 S3_PROCESSED_BUCKET = os.environ.get("S3_PROCESSED_BUCKET", "lifesync-processed")
-S3_CURATED_BUCKET = os.environ.get("S3_CURATED_BUCKET", "lifesync-curated")
+S3_CURATED_BUCKET   = os.environ.get("S3_CURATED_BUCKET",   "lifesync-curated")
 
 date_formatted = f"{BATCH_DATE[:4]}-{BATCH_DATE[4:6]}-{BATCH_DATE[6:8]}"
 
@@ -20,91 +20,120 @@ spark = SparkSession.builder \
 
 spark.sparkContext.setLogLevel("WARN")
 
-print(f"[ai_feature_table] Starting job for BATCH_DATE={BATCH_DATE}, date_formatted={date_formatted}")
+print(f"[ai_feature_table] BATCH_DATE={BATCH_DATE}")
 
-customer360_path = f"s3://{S3_CURATED_BUCKET}/customer360/dt={date_formatted}/"
-score_mart_path = f"s3://{S3_CURATED_BUCKET}/score_mart/dt={date_formatted}/"
+df_c360   = spark.read.parquet(f"s3://{S3_CURATED_BUCKET}/customer360/dt={date_formatted}/")
+df_score  = spark.read.parquet(f"s3://{S3_CURATED_BUCKET}/score_mart/dt={date_formatted}/")
+df_health = spark.read.parquet(f"s3://{S3_CURATED_BUCKET}/health_mart/dt={date_formatted}/")
 
-print(f"[ai_feature_table] Reading customer360 from {customer360_path}")
-df_c360 = spark.read.parquet(customer360_path)
+df = df_c360 \
+    .join(df_score.select("global_id", "lifesync_score", "customer_grade"),
+          on="global_id", how="left") \
+    .join(df_health.select("global_id", "avg_heart_rate", "avg_steps",
+                           "hospital_visit_count"),
+          on="global_id", how="left")
 
-print(f"[ai_feature_table] Reading score_mart from {score_mart_path}")
-df_score = spark.read.parquet(score_mart_path)
+df = df.fillna({
+    "lifesync_score": 0.0, "customer_grade": "BRONZE",
+    "avg_heart_rate": 0.0, "avg_steps": 0.0, "hospital_visit_count": 0,
+})
 
-print("[ai_feature_table] Joining customer360 and score_mart")
-df = df_c360.join(
-    df_score.select(
-        "global_customer_id",
-        "lifesync_score",
-        "customer_grade"
-    ),
-    on="global_customer_id",
-    how="left"
+# ── 금융 Feature ──────────────────────────────────────────────────────────────
+df = df.withColumn("balance_30d_avg",  col("latest_balance"))
+df = df.withColumn("asset_growth_90d", lit(0.0))
+df = df.withColumn("card_spend_30d",   col("card_total_spend"))
+
+total_assets = col("latest_balance") + col("invest_total") + col("insurance_premium") * lit(12.0)
+df = df.withColumn(
+    "invest_ratio",
+    when(total_assets > 0, col("invest_total") / total_assets).otherwise(lit(0.0))
+)
+df = df.withColumn("etf_ratio",  lit(0.0))
+df = df.withColumn("policy_cnt", (col("insurance_count") + col("online_insurance_count")).cast("double"))
+
+# ── 건강 Feature ──────────────────────────────────────────────────────────────
+df = df.withColumn("avg_steps_30d",     col("avg_steps"))
+df = df.withColumn("avg_hr_30d",        col("avg_heart_rate"))
+df = df.withColumn("hospital_visit_90d", col("hospital_visit_count").cast("double"))
+df = df.withColumn("health_risk_score", greatest(lit(0.0), lit(100.0) - col("health_score")))
+df = df.withColumn("step_growth_30d",   lit(0.0))
+
+# ── 행동 Feature ──────────────────────────────────────────────────────────────
+df = df.withColumn("login_cnt_30d",        lit(0.0))
+df = df.withColumn("avg_session_min",      lit(0.0))
+df = df.withColumn("push_click_rate",      lit(0.0))
+df = df.withColumn("recommend_click_rate", lit(0.0))
+df = df.withColumn("last_active_days",     lit(0.0))
+
+# ── 관계 Feature ──────────────────────────────────────────────────────────────
+affiliate_expr = (
+    when(col("bank_tx_count")        > 0, lit(1)).otherwise(lit(0)) +
+    when(col("card_tx_count")        > 0, lit(1)).otherwise(lit(0)) +
+    when(col("invest_product_count") > 0, lit(1)).otherwise(lit(0)) +
+    when(col("insurance_count")      > 0, lit(1)).otherwise(lit(0)) +
+    when(col("online_insurance_count") > 0, lit(1)).otherwise(lit(0)) +
+    when(col("hospital_visit_count") > 0, lit(1)).otherwise(lit(0))
+)
+df = df.withColumn("affiliate_cnt",      affiliate_expr.cast("double"))
+df = df.withColumn("consent_ratio",      lit(0.5))
+df = df.withColumn("membership_days",    lit(365.0))
+df = df.withColumn(
+    "cross_product_score",
+    (col("invest_product_count") + col("insurance_count") + col("online_insurance_count")).cast("double")
 )
 
-print("[ai_feature_table] Computing derived labels")
+# ── 성장 Feature ──────────────────────────────────────────────────────────────
+df = df.withColumn("spend_growth_90d",  lit(0.0))
+df = df.withColumn("invest_growth_90d", lit(0.0))
+df = df.withColumn("wellness_growth_30d", lit(0.0))
 
+# ── Risk Feature ──────────────────────────────────────────────────────────────
+df = df.withColumn("inactive_days",    lit(0.0))
+df = df.withColumn("card_drop_ratio",  lit(0.0))
+df = df.withColumn("asset_drop_ratio", lit(0.0))
+df = df.withColumn("complaint_flag",   lit(0.0))
+
+# ── Label ─────────────────────────────────────────────────────────────────────
 df = df.withColumn(
     "vip_label",
-    when(
-        (col("customer_grade") == "GOLD") & (col("wearable_flag") == "Y"),
-        lit("VIP_CONFIRMED")
-    ).otherwise(lit("NOT_VIP"))
+    when((col("customer_grade") == "GOLD") & (col("wearable_flag") == "Y"), lit(1))
+    .otherwise(lit(0))
 )
+df = df.withColumn("churn_label",            when(col("inactive_days") > 90, lit(1)).otherwise(lit(0)))
+df = df.withColumn("pb_contract_label",      lit(0))
+df = df.withColumn("product_purchase_label", lit(0))
 
-df = df.withColumn(
-    "signup_label",
-    when(col("wearable_flag") == "Y", lit(1)).otherwise(lit(0))
-)
-
-df = df.withColumn(
-    "health_grade",
-    when(col("health_score") < 60, lit("RISK"))
-    .when(col("health_score") < 80, lit("NORMAL"))
-    .otherwise(lit("GOOD"))
-)
-
-print("[ai_feature_table] Selecting 30 feature columns")
+df = df.withColumn("dt", lit(date_formatted))
 
 ai_feature = df.select(
-    col("global_customer_id").alias("global_id"),
-    col("age"),
-    col("gender"),
-    col("region"),
-    col("job_group"),
-    col("income_grade"),
-    col("asset_grade"),
-    col("wearable_flag"),
-    col("bank_tx_count"),
-    col("bank_tx_total"),
-    col("latest_balance"),
-    col("bank_avg_tx_amount"),
-    col("card_tx_count"),
-    col("card_total_spend"),
-    col("card_category_count"),
-    col("card_avg_spend"),
-    col("invest_total"),
-    col("invest_product_count"),
-    col("insurance_premium"),
-    col("insurance_count"),
-    col("hospital_visit_count"),
-    col("health_score"),
-    col("bmi"),
-    col("lifesync_score"),
-    col("customer_grade"),
-    col("vip_label"),
-    col("signup_label"),
-    col("health_grade"),
-    col("dt")
+    col("global_id"),
+    # 금융
+    col("balance_30d_avg"), col("asset_growth_90d"), col("card_spend_30d"),
+    col("invest_total"),    col("invest_ratio"),     col("etf_ratio"),     col("policy_cnt"),
+    # 건강
+    col("avg_steps_30d"), col("avg_hr_30d"), col("hospital_visit_90d"),
+    col("health_risk_score"), col("step_growth_30d"),
+    # 행동
+    col("login_cnt_30d"), col("avg_session_min"), col("push_click_rate"),
+    col("recommend_click_rate"), col("last_active_days"),
+    # 관계
+    col("affiliate_cnt"), col("consent_ratio"), col("membership_days"), col("cross_product_score"),
+    # 성장
+    col("spend_growth_90d"), col("invest_growth_90d"), col("wellness_growth_30d"),
+    # Risk
+    col("inactive_days"), col("card_drop_ratio"), col("asset_drop_ratio"), col("complaint_flag"),
+    # Label
+    col("vip_label"), col("churn_label"), col("pb_contract_label"), col("product_purchase_label"),
+    col("dt"),
 )
 
 output_path = f"s3://{S3_CURATED_BUCKET}/ai_feature_table/dt={date_formatted}/"
-print(f"[ai_feature_table] Writing output to {output_path}")
+print(f"[ai_feature_table] Writing to {output_path}")
 
 ai_feature.write \
     .mode("overwrite") \
     .partitionBy("dt") \
     .parquet(output_path)
 
-print(f"[ai_feature_table] Job completed successfully. Output: {output_path}")
+print("[ai_feature_table] Completed successfully")
 spark.stop()

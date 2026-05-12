@@ -77,7 +77,7 @@ df = df.withColumn(
 )
 
 score_mart = df.select(
-    col("global_customer_id"),
+    col("global_id"),
     col("lifesync_score"),
     col("customer_grade"),
     col("score_balance"),

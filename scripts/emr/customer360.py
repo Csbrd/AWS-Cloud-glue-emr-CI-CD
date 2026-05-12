@@ -27,17 +27,24 @@ def read_processed(subsidiary):
     print(f"[customer360] Reading {subsidiary} from {path}")
     return spark.read.parquet(path)
 
+print("[customer360] Reading customer_master (demographics base)")
+customer_master_path = f"s3://{S3_CURATED_BUCKET}/customer_master/"
+df_customer_master = spark.read.parquet(customer_master_path).select(
+    "global_id", "gender", "age", "region",
+    "job_group", "income_grade", "asset_grade", "wearable_flag"
+)
+
 print("[customer360] Reading all 7 subsidiary datasets")
-df_bank = read_processed("bank")
-df_card = read_processed("card")
-df_securities = read_processed("securities")
-df_insurance = read_processed("insurance")
+df_bank             = read_processed("bank")
+df_card             = read_processed("card")
+df_securities       = read_processed("securities")
+df_insurance        = read_processed("insurance")
 df_online_insurance = read_processed("online_insurance")
-df_healthcare = read_processed("healthcare")
-df_hospital = read_processed("hospital")
+df_healthcare       = read_processed("healthcare")
+df_hospital         = read_processed("hospital")
 
 print("[customer360] Aggregating bank data")
-bank_agg = df_bank.groupBy("global_customer_id").agg(
+bank_agg = df_bank.groupBy("global_id").agg(
     F.count("*").alias("bank_tx_count"),
     F.sum("tx_amount").alias("bank_tx_total"),
     F.max("balance").alias("latest_balance"),
@@ -45,7 +52,7 @@ bank_agg = df_bank.groupBy("global_customer_id").agg(
 )
 
 print("[customer360] Aggregating card data")
-card_agg = df_card.groupBy("global_customer_id").agg(
+card_agg = df_card.groupBy("global_id").agg(
     F.count("*").alias("card_tx_count"),
     F.sum("spend_amount").alias("card_total_spend"),
     F.countDistinct("merchant_category").alias("card_category_count"),
@@ -53,51 +60,44 @@ card_agg = df_card.groupBy("global_customer_id").agg(
 )
 
 print("[customer360] Aggregating securities data")
-securities_agg = df_securities.groupBy("global_customer_id").agg(
+securities_agg = df_securities.groupBy("global_id").agg(
     F.sum("invest_amount").alias("invest_total"),
     F.countDistinct("product_type").alias("invest_product_count")
 )
 
 print("[customer360] Aggregating insurance data")
-insurance_agg = df_insurance.groupBy("global_customer_id").agg(
+insurance_agg = df_insurance.groupBy("global_id").agg(
     F.sum("premium_amount").alias("insurance_premium"),
     F.count("*").alias("insurance_count")
 )
 
 print("[customer360] Aggregating online_insurance data")
-online_insurance_agg = df_online_insurance.groupBy("global_customer_id").agg(
+online_insurance_agg = df_online_insurance.groupBy("global_id").agg(
     F.sum("premium_amount").alias("online_insurance_premium"),
     F.count("*").alias("online_insurance_count")
 )
 
 print("[customer360] Aggregating healthcare data")
-healthcare_agg = df_healthcare.groupBy("global_customer_id").agg(
+healthcare_agg = df_healthcare.groupBy("global_id").agg(
     F.avg("health_score").alias("health_score"),
-    F.max("bmi").alias("bmi"),
-    F.first("gender").alias("gender"),
-    F.first("age").alias("age"),
-    F.first("region").alias("region"),
-    F.first("job_group").alias("job_group"),
-    F.first("income_grade").alias("income_grade"),
-    F.first("asset_grade").alias("asset_grade"),
-    F.first("wearable_flag").alias("wearable_flag")
+    F.avg("bmi").alias("bmi"),
 )
 
 print("[customer360] Aggregating hospital data")
-hospital_agg = df_hospital.groupBy("global_customer_id").agg(
+hospital_agg = df_hospital.groupBy("global_id").agg(
     F.count("*").alias("hospital_visit_count"),
     F.sum("treatment_cost").alias("hospital_total_cost")
 )
 
-print("[customer360] Joining all aggregated datasets on global_customer_id")
-base = healthcare_agg
-
-base = base.join(bank_agg, on="global_customer_id", how="left")
-base = base.join(card_agg, on="global_customer_id", how="left")
-base = base.join(securities_agg, on="global_customer_id", how="left")
-base = base.join(insurance_agg, on="global_customer_id", how="left")
-base = base.join(online_insurance_agg, on="global_customer_id", how="left")
-base = base.join(hospital_agg, on="global_customer_id", how="left")
+print("[customer360] Joining all datasets on global_id (base: customer_master)")
+base = df_customer_master
+base = base.join(healthcare_agg,        on="global_id", how="left")
+base = base.join(bank_agg,              on="global_id", how="left")
+base = base.join(card_agg,              on="global_id", how="left")
+base = base.join(securities_agg,        on="global_id", how="left")
+base = base.join(insurance_agg,         on="global_id", how="left")
+base = base.join(online_insurance_agg,  on="global_id", how="left")
+base = base.join(hospital_agg,          on="global_id", how="left")
 
 base = base.fillna({
     "bank_tx_count": 0,

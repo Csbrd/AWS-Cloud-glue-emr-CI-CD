@@ -34,11 +34,11 @@ df_score = spark.read.parquet(score_mart_path)
 print("[vip_mart] Joining customer360 and score_mart")
 df = df_c360.join(
     df_score.select(
-        "global_customer_id",
+        "global_id",
         "lifesync_score",
         "customer_grade"
     ),
-    on="global_customer_id",
+    on="global_id",
     how="inner"
 )
 
@@ -72,7 +72,7 @@ vip_df = vip_df.withColumn(
 )
 
 vip_mart = vip_df.select(
-    col("global_customer_id"),
+    col("global_id"),
     col("age"),
     col("gender"),
     col("region"),

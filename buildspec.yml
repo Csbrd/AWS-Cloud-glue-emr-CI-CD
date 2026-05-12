@@ -1,0 +1,47 @@
+version: 0.2
+
+phases:
+  install:
+    runtime-versions:
+      python: 3.11
+    commands:
+      - pip install awscli --upgrade --quiet
+
+  build:
+    commands:
+      # ── Glue: 스크립트 S3 업로드 + Job 업데이트 (7개 계열사) ──────────────────
+      - aws s3 sync scripts/glue/ s3://lifesync-scripts/glue/ --delete
+      - |
+        for SUBSIDIARY in bank card securities insurance online_insurance healthcare hospital; do
+          aws glue update-job \
+            --job-name lifesync-${SUBSIDIARY}-etl \
+            --job-update "{\"Command\":{\"Name\":\"glueetl\",\"ScriptLocation\":\"s3://lifesync-scripts/glue/subsidiary_etl.py\",\"PythonVersion\":\"3\"},\"DefaultArguments\":{\"--source\":\"${SUBSIDIARY}\",\"--job-bookmark-option\":\"job-bookmark-enable\",\"--enable-metrics\":\"true\"}}"
+          echo "Updated Glue Job: lifesync-${SUBSIDIARY}-etl"
+        done
+
+      # ── EMR Serverless: 스크립트 S3 업로드 ────────────────────────────────────
+      - aws s3 sync scripts/emr/ s3://lifesync-scripts/emr/ --delete
+      - echo "EMR scripts synced to s3://lifesync-scripts/emr/"
+
+      # ── Lambda: 3개 함수 배포 ─────────────────────────────────────────────────
+      - cd scripts/lambda
+      - zip -j batch_loader.zip batch_loader.py
+      - aws lambda update-function-code --function-name lifesync-batch-loader --zip-file fileb://batch_loader.zip
+      - echo "Updated Lambda: lifesync-batch-loader"
+
+      - zip -j wearable_stream.zip wearable_stream.py
+      - aws lambda update-function-code --function-name lifesync-wearable-stream --zip-file fileb://wearable_stream.zip
+      - echo "Updated Lambda: lifesync-wearable-stream"
+
+      - zip -j recommendation_engine.zip recommendation_engine.py
+      - aws lambda update-function-code --function-name lifesync-recommendation-engine --zip-file fileb://recommendation_engine.zip
+      - echo "Updated Lambda: lifesync-recommendation-engine"
+      - cd ../..
+
+  post_build:
+    commands:
+      - echo "Data pipeline deployment complete"
+
+artifacts:
+  files:
+    - "**/*"

@@ -10,17 +10,19 @@ from awsglue.job import Job
 from awsglue.dynamicframe import DynamicFrame
 from pyspark.context import SparkContext
 from pyspark.sql import functions as F
-from pyspark.sql.types import LongType, StringType, DateType
+from pyspark.sql.types import LongType, StringType, DateType, DoubleType
 
 # ── 계열사별 설정 ──────────────────────────────────────────────────────────────
+# rename_cols: raw 컬럼명 → EMR 표준 컬럼명 (Glue 출력 시 적용)
 CONFIGS = {
     "bank": {
-        "pk_cols":   ["bank_id", "transaction_date"],
-        "keep_cols": ["bank_id", "global_customer_id", "balance",
-                      "transaction_amount", "transaction_type", "transaction_date"],
+        "pk_cols":     ["bank_id", "transaction_date"],
+        "rename_cols": {"transaction_amount": "tx_amount"},
+        "keep_cols":   ["bank_id", "global_id", "balance",
+                        "tx_amount", "transaction_type", "transaction_date"],
         "schema": [
             ("bank_id",            StringType()),
-            ("global_customer_id", StringType()),
+            ("global_id",          StringType()),
             ("balance",            LongType()),
             ("transaction_amount", LongType()),
             ("transaction_type",   StringType()),
@@ -28,77 +30,80 @@ CONFIGS = {
         ],
     },
     "card": {
-        "pk_cols":   ["card_id", "transaction_date"],
-        "keep_cols": ["card_id", "global_customer_id", "spending_amount",
-                      "merchant_category", "transaction_date"],
+        "pk_cols":     ["card_id", "transaction_date"],
+        "rename_cols": {"spending_amount": "spend_amount"},
+        "keep_cols":   ["card_id", "global_id", "spend_amount",
+                        "merchant_category", "transaction_date"],
         "schema": [
-            ("card_id",            StringType()),
-            ("global_customer_id", StringType()),
-            ("spending_amount",    LongType()),
-            ("merchant_category",  StringType()),
-            ("transaction_date",   DateType()),
+            ("card_id",           StringType()),
+            ("global_id",         StringType()),
+            ("spending_amount",   LongType()),
+            ("merchant_category", StringType()),
+            ("transaction_date",  DateType()),
         ],
     },
     "securities": {
-        "pk_cols":   ["securities_id", "transaction_date"],
-        "keep_cols": ["securities_id", "global_customer_id", "asset_value",
-                      "stock_code", "transaction_type", "transaction_date"],
+        "pk_cols":     ["securities_id", "transaction_date"],
+        "rename_cols": {"asset_value": "invest_amount", "transaction_type": "product_type"},
+        "keep_cols":   ["securities_id", "global_id", "invest_amount",
+                        "stock_code", "product_type", "transaction_date"],
         "schema": [
-            ("securities_id",      StringType()),
-            ("global_customer_id", StringType()),
-            ("asset_value",        LongType()),
-            ("stock_code",         StringType()),
-            ("transaction_type",   StringType()),
-            ("transaction_date",   DateType()),
+            ("securities_id",    StringType()),
+            ("global_id",        StringType()),
+            ("asset_value",      LongType()),
+            ("stock_code",       StringType()),
+            ("transaction_type", StringType()),
+            ("transaction_date", DateType()),
         ],
     },
     "insurance": {
         "pk_cols":   ["insurance_id"],
-        "keep_cols": ["insurance_id", "global_customer_id", "premium_amount",
+        "keep_cols": ["insurance_id", "global_id", "premium_amount",
                       "insurance_type", "contract_date", "expiry_date"],
         "schema": [
-            ("insurance_id",       StringType()),
-            ("global_customer_id", StringType()),
-            ("premium_amount",     LongType()),
-            ("insurance_type",     StringType()),
-            ("contract_date",      DateType()),
-            ("expiry_date",        DateType()),
+            ("insurance_id",   StringType()),
+            ("global_id",      StringType()),
+            ("premium_amount", LongType()),
+            ("insurance_type", StringType()),
+            ("contract_date",  DateType()),
+            ("expiry_date",    DateType()),
         ],
     },
     "online_insurance": {
         "pk_cols":   ["online_insurance_id"],
-        "keep_cols": ["online_insurance_id", "global_customer_id", "premium_amount",
+        "keep_cols": ["online_insurance_id", "global_id", "premium_amount",
                       "insurance_type", "transaction_date"],
         "schema": [
             ("online_insurance_id", StringType()),
-            ("global_customer_id",  StringType()),
+            ("global_id",           StringType()),
             ("premium_amount",      LongType()),
             ("insurance_type",      StringType()),
             ("transaction_date",    DateType()),
         ],
     },
     "healthcare": {
-        "pk_cols":   ["healthcare_id", "visit_date"],
-        "keep_cols": ["healthcare_id", "global_customer_id", "visit_date",
-                      "treatment_code", "treatment_amount"],
+        # raw 데이터 실제 필드: healthcare_id, global_id, bmi, health_score
+        # demographics(age, gender, region 등)는 customer_master에서 별도 조회
+        "pk_cols":   ["healthcare_id"],
+        "keep_cols": ["healthcare_id", "global_id", "bmi", "health_score"],
         "schema": [
-            ("healthcare_id",      StringType()),
-            ("global_customer_id", StringType()),
-            ("visit_date",         DateType()),
-            ("treatment_code",     StringType()),
-            ("treatment_amount",   LongType()),
+            ("healthcare_id", StringType()),
+            ("global_id",     StringType()),
+            ("bmi",           DoubleType()),
+            ("health_score",  LongType()),
         ],
     },
     "hospital": {
-        "pk_cols":   ["hospital_id", "visit_date"],
-        "keep_cols": ["hospital_id", "global_customer_id", "visit_date",
-                      "diagnosis_code", "treatment_amount"],
+        "pk_cols":     ["hospital_id", "visit_date"],
+        "rename_cols": {"treatment_amount": "treatment_cost"},
+        "keep_cols":   ["hospital_id", "global_id", "visit_date",
+                        "diagnosis_code", "treatment_cost"],
         "schema": [
-            ("hospital_id",        StringType()),
-            ("global_customer_id", StringType()),
-            ("visit_date",         DateType()),
-            ("diagnosis_code",     StringType()),
-            ("treatment_amount",   LongType()),
+            ("hospital_id",      StringType()),
+            ("global_id",        StringType()),
+            ("visit_date",       DateType()),
+            ("diagnosis_code",   StringType()),
+            ("treatment_amount", LongType()),
         ],
     },
 }
@@ -145,15 +150,19 @@ consent_df = glueContext.create_dynamic_frame.from_options(
         "dbtable":  "consent",
     },
     transformation_ctx="consent_src",
-).toDF().filter(F.col("is_consented") == True).select("global_customer_id")
+).toDF().filter(F.col("is_consented") == True).select("global_id")
 
 # ── 3. 동의 고객만 필터링 ──────────────────────────────────────────────────────
-filtered_df = raw_df.join(consent_df, on="global_customer_id", how="inner")
+filtered_df = raw_df.join(consent_df, on="global_id", how="inner")
 
 # ── 4. 스키마 정규화 ───────────────────────────────────────────────────────────
 normalized_df = filtered_df
 for col_name, col_type in cfg["schema"]:
     normalized_df = normalized_df.withColumn(col_name, F.col(col_name).cast(col_type))
+
+# ── 4.5 컬럼명 표준화 (raw명 → EMR 표준명) ────────────────────────────────────
+for old_name, new_name in cfg.get("rename_cols", {}).items():
+    normalized_df = normalized_df.withColumnRenamed(old_name, new_name)
 
 # ── 5. PII 제거 + 필요 컬럼만 선택 ───────────────────────────────────────────
 selected_df = normalized_df.select(cfg["keep_cols"])

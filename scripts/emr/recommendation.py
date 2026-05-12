@@ -88,7 +88,7 @@ df = df.withColumn(
 )
 
 recommendation = df.select(
-    col("global_customer_id"),
+    col("global_id"),
     col("income_grade"),
     col("invest_total"),
     col("insurance_premium"),

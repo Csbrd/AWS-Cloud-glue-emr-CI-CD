@@ -28,36 +28,40 @@ def read_processed(subsidiary):
     return spark.read.parquet(path)
 
 df_healthcare = read_processed("healthcare")
-df_hospital = read_processed("hospital")
-df_wearable = read_processed("wearable")
+df_hospital   = read_processed("hospital")
+df_wearable   = read_processed("wearable")
+
+print("[health_mart] Reading customer_master for demographics")
+customer_master_path = f"s3://{S3_CURATED_BUCKET}/customer_master/"
+df_customer_master = spark.read.parquet(customer_master_path).select(
+    "global_id", "age", "gender", "region"
+)
 
 print("[health_mart] Aggregating healthcare data")
-healthcare_agg = df_healthcare.groupBy("global_customer_id").agg(
+healthcare_agg = df_healthcare.groupBy("global_id").agg(
     F.avg("health_score").alias("health_score"),
     F.avg("bmi").alias("bmi"),
-    F.first("age").alias("age"),
-    F.first("gender").alias("gender"),
-    F.first("region").alias("region")
 )
 
 print("[health_mart] Aggregating hospital data")
-hospital_agg = df_hospital.groupBy("global_customer_id").agg(
+hospital_agg = df_hospital.groupBy("global_id").agg(
     F.count("*").alias("hospital_visit_count"),
     F.sum("treatment_cost").alias("hospital_total_cost"),
     F.countDistinct("department").alias("department_count")
 )
 
 print("[health_mart] Aggregating wearable data")
-wearable_agg = df_wearable.groupBy("global_customer_id").agg(
+wearable_agg = df_wearable.groupBy("global_id").agg(
     F.avg("heart_rate").alias("avg_heart_rate"),
     F.avg("steps").alias("avg_steps"),
     F.max("record_date").alias("last_sync_date")
 )
 
-print("[health_mart] Joining healthcare, hospital, and wearable datasets")
-df = healthcare_agg \
-    .join(hospital_agg, on="global_customer_id", how="left") \
-    .join(wearable_agg, on="global_customer_id", how="left")
+print("[health_mart] Joining all datasets (base: customer_master)")
+df = df_customer_master \
+    .join(healthcare_agg, on="global_id", how="left") \
+    .join(hospital_agg,   on="global_id", how="left") \
+    .join(wearable_agg,   on="global_id", how="left")
 
 df = df.fillna({
     "hospital_visit_count": 0,
@@ -89,7 +93,7 @@ df = df.withColumn(
 df = df.withColumn("dt", lit(date_formatted))
 
 health_mart = df.select(
-    col("global_customer_id"),
+    col("global_id"),
     col("age"),
     col("gender"),
     col("region"),
