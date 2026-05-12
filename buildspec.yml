@@ -24,23 +24,10 @@ phases:
       - echo "EMR scripts synced to s3://lifesync-scripts/emr/"
 
       # ── Lambda: 3개 함수 배포 ─────────────────────────────────────────────────
-      - cd scripts/lambda
-      - zip -j batch_loader.zip batch_loader.py
-      - aws lambda update-function-code --function-name lifesync-batch-loader --zip-file fileb://batch_loader.zip
-      - echo "Updated Lambda: lifesync-batch-loader"
-
-      - zip -j wearable_stream.zip wearable_stream.py
-      - aws lambda update-function-code --function-name lifesync-wearable-stream --zip-file fileb://wearable_stream.zip
-      - echo "Updated Lambda: lifesync-wearable-stream"
-
-      - zip -j recommendation_engine.zip recommendation_engine.py
-      - aws lambda update-function-code --function-name lifesync-recommendation-engine --zip-file fileb://recommendation_engine.zip
-      - echo "Updated Lambda: lifesync-recommendation-engine"
-      - cd ../..
 
   post_build:
     commands:
-      - echo "Data pipeline deployment complete"
+      - echo "Glue/EMR data pipeline deployment complete"
 
 artifacts:
   files:

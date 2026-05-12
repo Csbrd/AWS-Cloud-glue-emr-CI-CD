@@ -6,13 +6,12 @@ on:
     paths:
       - "scripts/glue/**"
       - "scripts/emr/**"
-      - "scripts/lambda/**"
       - "buildspec.yml"
       - ".github/workflows/data_cicd.yml"
 
 jobs:
-  unit-test:
-    name: Unit Test
+  syntax-check:
+    name: Glue/EMR Syntax Check
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -21,12 +20,8 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install test dependencies
-        run: |
-          pip install pytest pytest-mock moto[s3,dynamodb,kinesis] boto3 psycopg2-binary redis
-
-      - name: Run Lambda unit tests
-        run: pytest scripts/lambda/tests/ -v
+      - name: Compile Glue and EMR scripts
+        run: python -m compileall -q scripts/glue scripts/emr
 
   security-scan:
     name: Security Scan
@@ -50,16 +45,11 @@ jobs:
       - name: Bandit
         run: |
           pip install bandit
-          bandit -r scripts/lambda/ scripts/glue/ scripts/emr/ -ll -x scripts/lambda/tests/
-
-      - name: pip-audit
-        run: |
-          pip install pip-audit
-          pip-audit -r scripts/cloudrun/requirements.txt
+          bandit -r scripts/glue/ scripts/emr/ -ll
 
   deploy:
     name: Deploy to CodeCommit
-    needs: [unit-test, security-scan]
+    needs: [syntax-check, security-scan]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
