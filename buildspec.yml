@@ -1,4 +1,4 @@
-version: 0.2
+﻿version: 0.2
 
 phases:
   install:
@@ -22,8 +22,6 @@ phases:
       # ── EMR Serverless: 스크립트 S3 업로드 ────────────────────────────────────
       - aws s3 sync scripts/emr/ s3://lifesync-scripts/emr/ --delete
       - echo "EMR scripts synced to s3://lifesync-scripts/emr/"
-
-      # ── Lambda: 3개 함수 배포 ─────────────────────────────────────────────────
 
   post_build:
     commands:

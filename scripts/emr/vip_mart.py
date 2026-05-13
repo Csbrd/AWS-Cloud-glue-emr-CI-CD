@@ -1,4 +1,4 @@
-import os
+﻿import os
 import sys
 from pyspark.sql import SparkSession
 from pyspark.sql import functions as F
@@ -42,9 +42,9 @@ df = df_c360.join(
     how="inner"
 )
 
-print("[vip_mart] Filtering VIP customers: GOLD grade AND wearable_flag=Y")
+print("[vip_mart] Filtering VIP/GOLD customers with wearable_flag=Y")
 vip_df = df.filter(
-    (col("customer_grade") == "GOLD") & (col("wearable_flag") == "Y")
+    (col("customer_grade").isin("VIP", "GOLD")) & (col("wearable_flag") == "Y")
 )
 
 print("[vip_mart] Computing preferred subsidiary based on highest spend contribution")

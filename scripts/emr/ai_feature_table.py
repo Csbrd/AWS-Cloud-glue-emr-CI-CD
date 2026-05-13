@@ -1,4 +1,4 @@
-import os
+﻿import os
 import sys
 from pyspark.sql import SparkSession
 from pyspark.sql import functions as F
@@ -96,7 +96,7 @@ df = df.withColumn("complaint_flag",   lit(0.0))
 # ── Label ─────────────────────────────────────────────────────────────────────
 df = df.withColumn(
     "vip_label",
-    when((col("customer_grade") == "GOLD") & (col("wearable_flag") == "Y"), lit(1))
+    when((col("customer_grade").isin("VIP", "GOLD")) & (col("wearable_flag") == "Y"), lit(1))
     .otherwise(lit(0))
 )
 df = df.withColumn("churn_label",            when(col("inactive_days") > 90, lit(1)).otherwise(lit(0)))

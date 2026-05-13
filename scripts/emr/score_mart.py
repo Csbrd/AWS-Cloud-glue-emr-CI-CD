@@ -1,4 +1,4 @@
-import os
+﻿import os
 import sys
 from pyspark.sql import SparkSession
 from pyspark.sql import functions as F
@@ -71,9 +71,11 @@ df = df.withColumn(
 print("[score_mart] Assigning customer_grade")
 df = df.withColumn(
     "customer_grade",
-    when(col("lifesync_score") >= 75, lit("GOLD"))
-    .when(col("lifesync_score") >= 55, lit("SILVER"))
-    .otherwise(lit("BRONZE"))
+    when(col("lifesync_score") >= 90, lit("VIP"))
+    .when(col("lifesync_score") >= 80, lit("GOLD"))
+    .when(col("lifesync_score") >= 70, lit("SILVER"))
+    .when(col("lifesync_score") >= 60, lit("BASIC"))
+    .otherwise(lit("CARE"))
 )
 
 score_mart = df.select(
