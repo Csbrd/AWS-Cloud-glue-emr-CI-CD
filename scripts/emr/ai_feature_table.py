@@ -22,7 +22,7 @@ spark.sparkContext.setLogLevel("WARN")
 
 print(f"[ai_feature_table] BATCH_DATE={BATCH_DATE}")
 
-df_c360  = spark.read.parquet(f"s3://{S3_CURATED_BUCKET}/customer360/dt={date_formatted}/")
+df_c360  = spark.read.parquet(f"s3://{S3_CURATED_BUCKET}/customer_360_profile/dt={date_formatted}/")
 df_score = spark.read.parquet(f"s3://{S3_CURATED_BUCKET}/score_mart/dt={date_formatted}/")
 
 df = df_c360 \

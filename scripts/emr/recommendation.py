@@ -63,8 +63,8 @@ df_cross_sell = spark.read.jdbc(
 ).select("product_id", "action_code")
 
 # ── customer360 읽기 ──────────────────────────────────────────────────────────
-customer360_path = f"s3://{S3_CURATED_BUCKET}/customer360/dt={date_formatted}/"
-print(f"[recommendation] Reading customer360 from {customer360_path}")
+customer360_path = f"s3://{S3_CURATED_BUCKET}/customer_360_profile/dt={date_formatted}/"
+print(f"[recommendation] Reading customer_360_profile from {customer360_path}")
 df = spark.read.parquet(customer360_path)
 
 # ── 추천 조건 적용 (recommend_rule 활성 목록 기반) ────────────────────────────
@@ -123,7 +123,7 @@ recommendation = df.select(
     col("dt"),
 )
 
-output_path = f"s3://{S3_CURATED_BUCKET}/recommendation/dt={date_formatted}/"
+output_path = f"s3://{S3_CURATED_BUCKET}/recommendation_mart/dt={date_formatted}/"
 print(f"[recommendation] Writing output to {output_path}")
 
 recommendation.write \

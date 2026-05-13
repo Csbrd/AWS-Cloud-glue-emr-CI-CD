@@ -123,7 +123,7 @@ base = base.fillna({
 
 base = base.withColumn("dt", lit(date_formatted))
 
-output_path = f"s3://{S3_CURATED_BUCKET}/customer360/dt={date_formatted}/"
+output_path = f"s3://{S3_CURATED_BUCKET}/customer_360_profile/dt={date_formatted}/"
 print(f"[customer360] Writing output to {output_path}")
 
 base.write \

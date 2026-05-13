@@ -22,10 +22,10 @@ spark.sparkContext.setLogLevel("WARN")
 
 print(f"[vip_mart] Starting job for BATCH_DATE={BATCH_DATE}, date_formatted={date_formatted}")
 
-customer360_path = f"s3://{S3_CURATED_BUCKET}/customer360/dt={date_formatted}/"
+customer360_path = f"s3://{S3_CURATED_BUCKET}/customer_360_profile/dt={date_formatted}/"
 score_mart_path = f"s3://{S3_CURATED_BUCKET}/score_mart/dt={date_formatted}/"
 
-print(f"[vip_mart] Reading customer360 from {customer360_path}")
+print(f"[vip_mart] Reading customer_360_profile from {customer360_path}")
 df_c360 = spark.read.parquet(customer360_path)
 
 print(f"[vip_mart] Reading score_mart from {score_mart_path}")
