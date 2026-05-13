@@ -166,6 +166,10 @@ raw_df = glueContext.create_dynamic_frame.from_options(
     transformation_ctx=f"{SOURCE}_raw_src",
 ).toDF()
 
+# 래핑된 JSON 포맷 처리 {"source":..., "records": [...]}
+if "records" in raw_df.columns:
+    raw_df = raw_df.select(F.explode("records").alias("rec")).select("rec.*")
+
 # ── 2. Consent 스냅샷 읽기 (Lambda가 MySQL consent 테이블 SELECT 후 S3 Raw에 Parquet 저장) ──
 _consent_schema = StructType([
     StructField("global_id",        StringType(), True),
