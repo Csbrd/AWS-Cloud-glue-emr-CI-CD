@@ -12,7 +12,7 @@ from awsglue.job import Job
 from awsglue.dynamicframe import DynamicFrame
 from pyspark.context import SparkContext
 from pyspark.sql import functions as F
-from pyspark.sql.types import LongType, StringType, DateType, DoubleType
+from pyspark.sql.types import LongType, StringType, DateType, DoubleType, StructType, StructField
 
 # ── 계열사별 설정 ──────────────────────────────────────────────────────────────
 # rename_cols: raw 컬럼명 → EMR 표준 컬럼명 (Glue 출력 시 적용)
@@ -167,9 +167,17 @@ raw_df = glueContext.create_dynamic_frame.from_options(
 ).toDF()
 
 # ── 2. Consent 스냅샷 읽기 (Lambda가 MySQL consent 테이블 SELECT 후 S3 Raw에 Parquet 저장) ──
+_consent_schema = StructType([
+    StructField("global_id",        StringType(), True),
+    StructField("domain",           StringType(), True),
+    StructField("consent_flag",     StringType(), True),
+    StructField("consent_version",  StringType(), True),
+    StructField("consent_dt",       StringType(), True),
+    StructField("revoke_dt",        StringType(), True),
+])
 consent_ids = (
-    spark.read.csv(f"s3://{RAW_BUCKET}/consent/", header=True, inferSchema=False)
-         .filter(F.col("is_consented") == "true")
+    spark.read.csv(f"s3://{RAW_BUCKET}/consent/", header=True, schema=_consent_schema)
+         .filter(F.col("consent_flag") == "Y")
          .select("global_id")
 )
 
