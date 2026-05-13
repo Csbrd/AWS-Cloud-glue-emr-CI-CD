@@ -155,6 +155,9 @@ spark       = glueContext.spark_session
 job         = Job(glueContext)
 job.init(args["JOB_NAME"], args)
 
+date_str  = datetime.now(KST).strftime("%Y-%m-%d")
+s3_client = boto3.client("s3")
+
 # ── 1. S3 Raw JSON 읽기 ────────────────────────────────────────────────────────
 raw_df = glueContext.create_dynamic_frame.from_options(
     connection_type="s3",
@@ -208,9 +211,6 @@ EMR_APP_ID   = os.environ.get("EMR_APP_ID", "")
 EMR_ROLE_ARN = os.environ.get("EMR_ROLE_ARN", "")
 S3_SCRIPTS   = os.environ.get("S3_SCRIPT_BASE", "s3://lifesync-scripts/emr")
 S3_CURATED   = os.environ.get("S3_CURATED_BUCKET", "lifesync-curated")
-
-date_str = datetime.now(KST).strftime("%Y-%m-%d")
-s3_client = boto3.client("s3")
 
 # ── 8. 마커 파일 생성 ─────────────────────────────────────────────────────────
 s3_client.put_object(
