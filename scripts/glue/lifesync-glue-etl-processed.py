@@ -1,5 +1,8 @@
-﻿import sys
+﻿import os
+import sys
+import time
 import boto3
+from botocore.exceptions import ClientError
 from datetime import datetime, timezone, timedelta
 
 from awsglue.transforms import *
@@ -16,73 +19,82 @@ from pyspark.sql.types import LongType, StringType, DateType, DoubleType
 CONFIGS = {
     "bank": {
         "pk_cols":     ["bank_id", "transaction_date"],
-        "rename_cols": {"transaction_amount": "tx_amount"},
+        "rename_cols": {
+            "amount":         "tx_amount",
+            "balance_after":  "balance",
+            "transaction_dt": "transaction_date",
+        },
         "keep_cols":   ["bank_id", "global_id", "balance",
                         "tx_amount", "transaction_type", "transaction_date"],
         "schema": [
-            ("bank_id",            StringType()),
-            ("global_id",          StringType()),
-            ("balance",            LongType()),
-            ("transaction_amount", LongType()),
-            ("transaction_type",   StringType()),
-            ("transaction_date",   DateType()),
+            ("bank_id",          StringType()),
+            ("global_id",        StringType()),
+            ("balance_after",    LongType()),
+            ("amount",           LongType()),
+            ("transaction_type", StringType()),
+            ("transaction_dt",   DateType()),
         ],
     },
     "card": {
         "pk_cols":     ["card_id", "transaction_date"],
-        "rename_cols": {"spending_amount": "spend_amount"},
+        "rename_cols": {
+            "amount":      "spend_amount",
+            "approval_dt": "transaction_date",
+        },
         "keep_cols":   ["card_id", "global_id", "spend_amount",
                         "merchant_category", "transaction_date"],
         "schema": [
             ("card_id",           StringType()),
             ("global_id",         StringType()),
-            ("spending_amount",   LongType()),
+            ("amount",            LongType()),
             ("merchant_category", StringType()),
-            ("transaction_date",  DateType()),
+            ("approval_dt",       DateType()),
         ],
     },
     "securities": {
         "pk_cols":     ["securities_id", "transaction_date"],
-        "rename_cols": {"asset_value": "invest_amount", "transaction_type": "product_type"},
+        "rename_cols": {
+            "price":      "invest_amount",
+            "symbol":     "stock_code",
+            "trade_type": "product_type",
+            "trade_dt":   "transaction_date",
+        },
         "keep_cols":   ["securities_id", "global_id", "invest_amount",
                         "stock_code", "product_type", "transaction_date"],
         "schema": [
-            ("securities_id",    StringType()),
-            ("global_id",        StringType()),
-            ("asset_value",      LongType()),
-            ("stock_code",       StringType()),
-            ("transaction_type", StringType()),
-            ("transaction_date", DateType()),
+            ("securities_id", StringType()),
+            ("global_id",     StringType()),
+            ("price",         LongType()),
+            ("symbol",        StringType()),
+            ("trade_type",    StringType()),
+            ("trade_dt",      DateType()),
         ],
     },
     "insurance": {
         "pk_cols":   ["insurance_id"],
-        "keep_cols": ["insurance_id", "global_id", "premium_amount",
-                      "insurance_type", "contract_date", "expiry_date"],
+        "keep_cols": ["insurance_id", "global_id", "premium_amount", "payment_cycle"],
         "schema": [
             ("insurance_id",   StringType()),
             ("global_id",      StringType()),
             ("premium_amount", LongType()),
-            ("insurance_type", StringType()),
-            ("contract_date",  DateType()),
-            ("expiry_date",    DateType()),
+            ("payment_cycle",  StringType()),
         ],
     },
     "online_insurance": {
-        "pk_cols":   ["online_insurance_id"],
-        "keep_cols": ["online_insurance_id", "global_id", "premium_amount",
-                      "insurance_type", "transaction_date"],
+        "pk_cols":     ["online_insurance_id"],
+        "rename_cols": {
+            "premium_quote": "premium_amount",
+            "event_dt":      "transaction_date",
+        },
+        "keep_cols": ["online_insurance_id", "global_id", "premium_amount", "transaction_date"],
         "schema": [
             ("online_insurance_id", StringType()),
             ("global_id",           StringType()),
-            ("premium_amount",      LongType()),
-            ("insurance_type",      StringType()),
-            ("transaction_date",    DateType()),
+            ("premium_quote",       LongType()),
+            ("event_dt",            DateType()),
         ],
     },
     "healthcare": {
-        # raw 데이터 실제 필드: healthcare_id, global_id, bmi, health_score
-        # demographics(age, gender, region 등)는 customer_master에서 별도 조회
         "pk_cols":   ["healthcare_id"],
         "keep_cols": ["healthcare_id", "global_id", "bmi", "health_score"],
         "schema": [
@@ -94,15 +106,18 @@ CONFIGS = {
     },
     "hospital": {
         "pk_cols":     ["hospital_id", "visit_date"],
-        "rename_cols": {"treatment_amount": "treatment_cost"},
+        "rename_cols": {
+            "cost":     "treatment_cost",
+            "visit_dt": "visit_date",
+        },
         "keep_cols":   ["hospital_id", "global_id", "visit_date",
                         "diagnosis_code", "treatment_cost"],
         "schema": [
-            ("hospital_id",      StringType()),
-            ("global_id",        StringType()),
-            ("visit_date",       DateType()),
-            ("diagnosis_code",   StringType()),
-            ("treatment_amount", LongType()),
+            ("hospital_id",    StringType()),
+            ("global_id",      StringType()),
+            ("visit_dt",       DateType()),
+            ("diagnosis_code", StringType()),
+            ("cost",           LongType()),
         ],
     },
     "wearable": {
