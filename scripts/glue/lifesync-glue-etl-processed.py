@@ -1,5 +1,4 @@
 ﻿import sys
-import json
 import boto3
 from datetime import datetime, timezone, timedelta
 
@@ -106,6 +105,20 @@ CONFIGS = {
             ("treatment_amount", LongType()),
         ],
     },
+    "wearable": {
+        "pk_cols":   ["global_id", "record_date"],
+        "keep_cols": ["global_id", "heart_rate", "steps",
+                      "sleep_hours", "stress_score", "wellness_score", "record_date"],
+        "schema": [
+            ("global_id",      StringType()),
+            ("heart_rate",     LongType()),
+            ("steps",          LongType()),
+            ("sleep_hours",    DoubleType()),
+            ("stress_score",   LongType()),
+            ("wellness_score", LongType()),
+            ("record_date",    DateType()),
+        ],
+    },
 }
 
 RAW_BUCKET  = "lifesync-raw"
@@ -135,25 +148,8 @@ raw_df = glueContext.create_dynamic_frame.from_options(
     transformation_ctx=f"{SOURCE}_raw_src",
 ).toDF()
 
-# ── 2. On-Prem MySQL consent 조회 ─────────────────────────────────────────────
-def _get_mysql_creds() -> dict:
-    sm = boto3.client("secretsmanager", region_name="ap-northeast-2")
-    return json.loads(sm.get_secret_value(SecretId="lifesync/mysql/credentials")["SecretString"])
-
-creds = _get_mysql_creds()
-consent_df = glueContext.create_dynamic_frame.from_options(
-    connection_type="mysql",
-    connection_options={
-        "url":      f"jdbc:mysql://{creds['host']}:{creds['port']}/lifesync",
-        "user":     creds["username"],
-        "password": creds["password"],
-        "dbtable":  "consent",
-    },
-    transformation_ctx="consent_src",
-).toDF().filter(F.col("is_consented") == True).select("global_id")
-
-# ── 3. 동의 고객만 필터링 ──────────────────────────────────────────────────────
-filtered_df = raw_df.join(consent_df, on="global_id", how="inner")
+# ── 2-3. Lambda가 동의 고객만 선별하여 S3 Raw에 적재한 데이터를 그대로 사용 ──
+filtered_df = raw_df
 
 # ── 4. 스키마 정규화 ───────────────────────────────────────────────────────────
 normalized_df = filtered_df
@@ -181,11 +177,96 @@ glueContext.write_dynamic_frame.from_options(
 )
 
 # ── 8. 마커 파일 생성 → EMR 트리거 감지용 ────────────────────────────────────
+SUBSIDIARIES = [
+    "bank", "card", "securities", "insurance",
+    "online_insurance", "healthcare", "hospital", "wearable",
+]
+
+EMR_APP_ID   = os.environ.get("EMR_APP_ID", "")
+EMR_ROLE_ARN = os.environ.get("EMR_ROLE_ARN", "")
+S3_SCRIPTS   = os.environ.get("S3_SCRIPT_BASE", "s3://lifesync-scripts/emr")
+S3_CURATED   = os.environ.get("S3_CURATED_BUCKET", "lifesync-curated")
+
 date_str = datetime.now(KST).strftime("%Y-%m-%d")
-boto3.client("s3").put_object(
+s3_client = boto3.client("s3")
+
+# ── 8. 마커 파일 생성 ─────────────────────────────────────────────────────────
+s3_client.put_object(
     Bucket=PROC_BUCKET,
     Key=f"_markers/{date_str}/{SOURCE}.done",
     Body=b"done",
 )
+print(f"[{SOURCE}] 마커 파일 생성 완료: _markers/{date_str}/{SOURCE}.done")
+
+# ── 9. 8개 마커 확인 → 전부 완료 시 EMR 트리거 ───────────────────────────────
+def _all_markers_done(date: str) -> bool:
+    for sub in SUBSIDIARIES:
+        try:
+            s3_client.head_object(Bucket=PROC_BUCKET, Key=f"_markers/{date}/{sub}.done")
+        except s3_client.exceptions.ClientError:
+            return False
+    return True
+
+if _all_markers_done(date_str):
+    print(f"[{SOURCE}] 8개 마커 모두 확인 — EMR Job 순차 제출 시작")
+    batch_date = date_str.replace("-", "")
+    emr = boto3.client("emr-serverless", region_name="ap-northeast-2")
+
+    emr_jobs = [
+        ("customer360",      "customer360.py"),
+        ("score_mart",       "score_mart.py"),
+        ("ai_feature_table", "ai_feature_table.py"),
+        ("vip_mart",         "vip_mart.py"),
+        ("recommendation",   "recommendation.py"),
+        ("health_mart",      "health_mart.py"),
+    ]
+
+    TERMINAL_STATES = {"SUCCESS", "FAILED", "CANCELLED"}
+    POLL_INTERVAL   = 30  # seconds
+
+    for job_name, script_file in emr_jobs:
+        response = emr.start_job_run(
+            applicationId=EMR_APP_ID,
+            executionRoleArn=EMR_ROLE_ARN,
+            name=f"lifesync-{job_name}-{batch_date}",
+            jobDriver={
+                "sparkSubmit": {
+                    "entryPoint": f"{S3_SCRIPTS}/{script_file}",
+                    "sparkSubmitParameters": (
+                        "--conf spark.executor.cores=2 "
+                        "--conf spark.executor.memory=4g"
+                    ),
+                }
+            },
+            configurationOverrides={
+                "monitoringConfiguration": {
+                    "s3MonitoringConfiguration": {
+                        "logUri": f"s3://{S3_CURATED}/emr-logs/"
+                    }
+                }
+            },
+            executionTimeoutMinutes=60,
+        )
+        job_run_id = response["jobRunId"]
+        print(f"[{SOURCE}] EMR {job_name} 제출 완료 jobRunId={job_run_id}")
+
+        # 완료될 때까지 polling 후 다음 Job 제출
+        import time
+        while True:
+            status = emr.get_job_run(
+                applicationId=EMR_APP_ID,
+                jobRunId=job_run_id,
+            )["jobRun"]["state"]
+
+            if status in TERMINAL_STATES:
+                print(f"[{SOURCE}] EMR {job_name} 종료 state={status}")
+                if status != "SUCCESS":
+                    raise RuntimeError(f"EMR {job_name} 실패: state={status}")
+                break
+
+            print(f"[{SOURCE}] EMR {job_name} 진행 중 state={status} — {POLL_INTERVAL}초 대기")
+            time.sleep(POLL_INTERVAL)
+else:
+    print(f"[{SOURCE}] 마커 미완료 계열사 있음 — EMR 대기 중")
 
 job.commit()

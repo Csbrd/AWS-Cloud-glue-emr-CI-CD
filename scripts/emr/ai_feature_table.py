@@ -22,20 +22,15 @@ spark.sparkContext.setLogLevel("WARN")
 
 print(f"[ai_feature_table] BATCH_DATE={BATCH_DATE}")
 
-df_c360   = spark.read.parquet(f"s3://{S3_CURATED_BUCKET}/customer360/dt={date_formatted}/")
-df_score  = spark.read.parquet(f"s3://{S3_CURATED_BUCKET}/score_mart/dt={date_formatted}/")
-df_health = spark.read.parquet(f"s3://{S3_CURATED_BUCKET}/health_mart/dt={date_formatted}/")
+df_c360  = spark.read.parquet(f"s3://{S3_CURATED_BUCKET}/customer360/dt={date_formatted}/")
+df_score = spark.read.parquet(f"s3://{S3_CURATED_BUCKET}/score_mart/dt={date_formatted}/")
 
 df = df_c360 \
     .join(df_score.select("global_id", "lifesync_score", "customer_grade"),
-          on="global_id", how="left") \
-    .join(df_health.select("global_id", "avg_heart_rate", "avg_steps",
-                           "hospital_visit_count"),
           on="global_id", how="left")
 
 df = df.fillna({
-    "lifesync_score": 0.0, "customer_grade": "BRONZE",
-    "avg_heart_rate": 0.0, "avg_steps": 0.0, "hospital_visit_count": 0,
+    "lifesync_score": 0.0, "customer_grade": "CARE",
 })
 
 # ── 금융 Feature ──────────────────────────────────────────────────────────────
@@ -52,8 +47,8 @@ df = df.withColumn("etf_ratio",  lit(0.0))
 df = df.withColumn("policy_cnt", (col("insurance_count") + col("online_insurance_count")).cast("double"))
 
 # ── 건강 Feature ──────────────────────────────────────────────────────────────
-df = df.withColumn("avg_steps_30d",     col("avg_steps"))
-df = df.withColumn("avg_hr_30d",        col("avg_heart_rate"))
+df = df.withColumn("avg_steps_30d",      lit(0.0))
+df = df.withColumn("avg_hr_30d",         lit(0.0))
 df = df.withColumn("hospital_visit_90d", col("hospital_visit_count").cast("double"))
 df = df.withColumn("health_risk_score", greatest(lit(0.0), lit(100.0) - col("health_score")))
 df = df.withColumn("step_growth_30d",   lit(0.0))
@@ -107,6 +102,7 @@ df = df.withColumn("dt", lit(date_formatted))
 
 ai_feature = df.select(
     col("global_id"),
+    col("lifesync_score"),
     # 금융
     col("balance_30d_avg"), col("asset_growth_90d"), col("card_spend_30d"),
     col("invest_total"),    col("invest_ratio"),     col("etf_ratio"),     col("policy_cnt"),
