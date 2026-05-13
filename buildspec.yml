@@ -15,7 +15,7 @@ phases:
         for SUBSIDIARY in bank card securities insurance online_insurance healthcare hospital; do
           aws glue update-job \
             --job-name lifesync-${SUBSIDIARY}-etl \
-            --job-update "{\"Command\":{\"Name\":\"glueetl\",\"ScriptLocation\":\"s3://lifesync-script-bucket-2/glue/subsidiary_etl.py\",\"PythonVersion\":\"3\"},\"DefaultArguments\":{\"--source\":\"${SUBSIDIARY}\",\"--job-bookmark-option\":\"job-bookmark-enable\",\"--enable-metrics\":\"true\"}}"
+            --job-update "{\"Command\":{\"Name\":\"glueetl\",\"ScriptLocation\":\"s3://lifesync-script-bucket-2/glue/lifesync-glue-etl-processed.py\",\"PythonVersion\":\"3\"},\"DefaultArguments\":{\"--source\":\"${SUBSIDIARY}\",\"--job-bookmark-option\":\"job-bookmark-enable\",\"--enable-metrics\":\"true\"}}"
           echo "Updated Glue Job: lifesync-${SUBSIDIARY}-etl"
         done
 
