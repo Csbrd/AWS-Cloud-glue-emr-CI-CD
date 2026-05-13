@@ -163,8 +163,15 @@ raw_df = glueContext.create_dynamic_frame.from_options(
     transformation_ctx=f"{SOURCE}_raw_src",
 ).toDF()
 
-# ── 2-3. Lambda가 동의 고객만 선별하여 S3 Raw에 적재한 데이터를 그대로 사용 ──
-filtered_df = raw_df
+# ── 2. Consent 스냅샷 읽기 (Lambda가 MySQL consent 테이블 SELECT 후 S3 Raw에 Parquet 저장) ──
+consent_ids = (
+    spark.read.parquet(f"s3://{RAW_BUCKET}/consent/{date_str}/")
+         .filter(F.col("is_consented") == True)
+         .select("global_id")
+)
+
+# ── 3. 동의 고객만 필터링 ─────────────────────────────────────────────────────
+filtered_df = raw_df.join(consent_ids, on="global_id", how="inner")
 
 # ── 4. 스키마 정규화 ───────────────────────────────────────────────────────────
 normalized_df = filtered_df
