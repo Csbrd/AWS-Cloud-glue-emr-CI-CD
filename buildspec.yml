@@ -24,6 +24,14 @@ phases:
       - echo "EMR scripts synced to s3://lifesync-scripts/emr/"
 
       # ── Lambda: 3개 함수 배포 ─────────────────────────────────────────────────
+      - zip -j /tmp/batch_loader.zip scripts/lambda/batch_loader.py
+      - aws lambda update-function-code --function-name lifesync-batch-loader --zip-file fileb:///tmp/batch_loader.zip
+      - zip -j /tmp/wearable_stream.zip scripts/lambda/wearable_stream.py
+      - aws lambda update-function-code --function-name lifesync-wearable-stream-lambda --zip-file fileb:///tmp/wearable_stream.zip
+      - mkdir -p /tmp/rec_pkg && cp scripts/lambda/recommendation_engine.py /tmp/rec_pkg/
+      - cp -r scripts/lambda/build/psycopg2 scripts/lambda/build/psycopg2_binary.libs scripts/lambda/build/redis /tmp/rec_pkg/
+      - cd /tmp/rec_pkg && zip -r /tmp/recommendation_engine.zip .
+      - aws lambda update-function-code --function-name lifesync-recommendation-engine --zip-file fileb:///tmp/recommendation_engine.zip
 
   post_build:
     commands:
