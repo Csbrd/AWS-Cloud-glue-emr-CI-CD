@@ -10,18 +10,18 @@ phases:
   build:
     commands:
       # ── Glue: 스크립트 S3 업로드 + Job 업데이트 (7개 계열사) ──────────────────
-      - aws s3 sync scripts/glue/ s3://lifesync-scripts/glue/ --delete
+      - aws s3 sync scripts/glue/ s3://lifesync-script-bucket-2/glue/ --delete
       - |
         for SUBSIDIARY in bank card securities insurance online_insurance healthcare hospital; do
           aws glue update-job \
             --job-name lifesync-${SUBSIDIARY}-etl \
-            --job-update "{\"Command\":{\"Name\":\"glueetl\",\"ScriptLocation\":\"s3://lifesync-scripts/glue/subsidiary_etl.py\",\"PythonVersion\":\"3\"},\"DefaultArguments\":{\"--source\":\"${SUBSIDIARY}\",\"--job-bookmark-option\":\"job-bookmark-enable\",\"--enable-metrics\":\"true\"}}"
+            --job-update "{\"Command\":{\"Name\":\"glueetl\",\"ScriptLocation\":\"s3://lifesync-script-bucket-2/glue/subsidiary_etl.py\",\"PythonVersion\":\"3\"},\"DefaultArguments\":{\"--source\":\"${SUBSIDIARY}\",\"--job-bookmark-option\":\"job-bookmark-enable\",\"--enable-metrics\":\"true\"}}"
           echo "Updated Glue Job: lifesync-${SUBSIDIARY}-etl"
         done
 
       # ── EMR Serverless: 스크립트 S3 업로드 ────────────────────────────────────
-      - aws s3 sync scripts/emr/ s3://lifesync-scripts/emr/ --delete
-      - echo "EMR scripts synced to s3://lifesync-scripts/emr/"
+      - aws s3 sync scripts/emr/ s3://lifesync-script-bucket-2/emr/ --delete
+      - echo "EMR scripts synced to s3://lifesync-script-bucket-2/emr/"
 
   post_build:
     commands:
