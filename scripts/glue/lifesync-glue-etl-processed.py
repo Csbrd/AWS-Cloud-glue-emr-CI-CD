@@ -168,8 +168,8 @@ raw_df = glueContext.create_dynamic_frame.from_options(
 
 # ── 2. Consent 스냅샷 읽기 (Lambda가 MySQL consent 테이블 SELECT 후 S3 Raw에 Parquet 저장) ──
 consent_ids = (
-    spark.read.parquet(f"s3://{RAW_BUCKET}/consent/{date_str}/")
-         .filter(F.col("is_consented") == True)
+    spark.read.csv(f"s3://{RAW_BUCKET}/consent/", header=True, inferSchema=False)
+         .filter(F.col("is_consented") == "true")
          .select("global_id")
 )
 
