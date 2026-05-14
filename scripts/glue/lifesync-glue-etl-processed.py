@@ -159,6 +159,7 @@ date_str  = datetime.now(KST).strftime("%Y-%m-%d")
 s3_client = boto3.client("s3")
 
 # ── 1. S3 Raw JSON 읽기 ────────────────────────────────────────────────────────
+# lifesync-identity-enricher Lambda가 global_id 매핑 후 원본 경로에 덮어쓰기 완료
 raw_df = glueContext.create_dynamic_frame.from_options(
     connection_type="s3",
     connection_options={"paths": [f"s3://{RAW_BUCKET}/{SOURCE}/"]},
@@ -170,40 +171,45 @@ raw_df = glueContext.create_dynamic_frame.from_options(
 if "records" in raw_df.columns:
     raw_df = raw_df.select(F.explode("records").alias("rec")).select("rec.*")
 
-# ── 2. Consent 스냅샷 읽기 (Lambda가 MySQL consent 테이블 SELECT 후 S3 Raw에 Parquet 저장) ──
+# ── 2. consent 스냅샷 읽기 + 동의 고객 필터링 ────────────────────────────────
 _consent_schema = StructType([
-    StructField("global_id",        StringType(), True),
-    StructField("domain",           StringType(), True),
-    StructField("consent_flag",     StringType(), True),
-    StructField("consent_version",  StringType(), True),
-    StructField("consent_dt",       StringType(), True),
-    StructField("revoke_dt",        StringType(), True),
+    StructField("global_id",       StringType(), True),
+    StructField("domain",          StringType(), True),
+    StructField("consent_flag",    StringType(), True),
+    StructField("consent_version", StringType(), True),
+    StructField("consent_dt",      StringType(), True),
+    StructField("revoke_dt",       StringType(), True),
 ])
 consent_ids = (
-    spark.read.csv(f"s3://{RAW_BUCKET}/consent/", header=True, schema=_consent_schema)
-         .filter(F.col("consent_flag") == "Y")
+    spark.read.schema(_consent_schema)
+         .parquet(f"s3://{RAW_BUCKET}/consent/")
+         .filter(
+             (F.col("consent_flag") == "Y") &
+             (F.col("revoke_dt").isNull() | (F.col("revoke_dt") == "None"))
+         )
          .select("global_id")
+         .distinct()
 )
 
-# ── 3. 동의 고객만 필터링 ─────────────────────────────────────────────────────
+# global_id inner join → 동의 고객만 통과
 filtered_df = raw_df.join(consent_ids, on="global_id", how="inner")
 
-# ── 4. 스키마 정규화 ───────────────────────────────────────────────────────────
+# ── 3. 스키마 정규화 ───────────────────────────────────────────────────────────
 normalized_df = filtered_df
 for col_name, col_type in cfg["schema"]:
     normalized_df = normalized_df.withColumn(col_name, F.col(col_name).cast(col_type))
 
-# ── 4.5 컬럼명 표준화 (raw명 → EMR 표준명) ────────────────────────────────────
+# ── 3.5 컬럼명 표준화 (raw명 → EMR 표준명) ───────────────────────────────────
 for old_name, new_name in cfg.get("rename_cols", {}).items():
     normalized_df = normalized_df.withColumnRenamed(old_name, new_name)
 
-# ── 5. PII 제거 + 필요 컬럼만 선택 ───────────────────────────────────────────
+# ── 4. PII 제거 + 필요 컬럼만 선택 ───────────────────────────────────────────
 selected_df = normalized_df.select(cfg["keep_cols"])
 
-# ── 6. 중복 제거 ───────────────────────────────────────────────────────────────
+# ── 5. 중복 제거 ───────────────────────────────────────────────────────────────
 deduped_df = selected_df.dropDuplicates(cfg["pk_cols"])
 
-# ── 7. S3 Processed에 Parquet 저장 (Snappy 압축) ──────────────────────────────
+# ── 6. S3 Processed에 Parquet 저장 (Snappy 압축) ──────────────────────────────
 glueContext.write_dynamic_frame.from_options(
     frame=DynamicFrame.fromDF(deduped_df, glueContext, f"{SOURCE}_output"),
     connection_type="s3",
@@ -213,7 +219,7 @@ glueContext.write_dynamic_frame.from_options(
     transformation_ctx=f"{SOURCE}_output",
 )
 
-# ── 8. 마커 파일 생성 → EMR 트리거 감지용 ────────────────────────────────────
+# ── 7. 마커 파일 생성 → EMR 트리거 감지용 ────────────────────────────────────
 SUBSIDIARIES = [
     "bank", "card", "securities", "insurance",
     "online_insurance", "healthcare", "hospital", "wearable",
@@ -224,7 +230,7 @@ EMR_ROLE_ARN = os.environ.get("EMR_ROLE_ARN", "")
 S3_SCRIPTS   = os.environ.get("S3_SCRIPT_BASE", "s3://lifesync-scripts/emr")
 S3_CURATED   = os.environ.get("S3_CURATED_BUCKET", "lifesync-curated")
 
-# ── 8. 마커 파일 생성 ─────────────────────────────────────────────────────────
+# ── 7. 마커 파일 생성 ─────────────────────────────────────────────────────────
 s3_client.put_object(
     Bucket=PROC_BUCKET,
     Key=f"_markers/{date_str}/{SOURCE}.done",
@@ -232,7 +238,7 @@ s3_client.put_object(
 )
 print(f"[{SOURCE}] 마커 파일 생성 완료: _markers/{date_str}/{SOURCE}.done")
 
-# ── 9. 8개 마커 확인 → 전부 완료 시 EMR 트리거 ───────────────────────────────
+# ── 8. 8개 마커 확인 → 전부 완료 시 EMR 트리거 ───────────────────────────────
 def _all_markers_done(date: str) -> bool:
     for sub in SUBSIDIARIES:
         try:

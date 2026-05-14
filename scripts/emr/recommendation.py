@@ -30,37 +30,44 @@ def _get_aurora_creds() -> dict:
     return json.loads(sm.get_secret_value(SecretId="lifesync/aurora/credentials")["SecretString"])
 
 
-# ── Aurora 연결 ───────────────────────────────────────────────────────────────
+# ── Aurora 연결 (Aurora MySQL) ────────────────────────────────────────────────
 print("[recommendation] Fetching Aurora credentials from Secrets Manager")
 creds = _get_aurora_creds()
 jdbc_url = (
-    f"jdbc:postgresql://{creds['host']}:{creds.get('port', 5432)}"
-    f"/{creds.get('dbname', 'lifesync')}"
+    f"jdbc:mysql://{creds['host']}:{creds.get('port', 3306)}"
+    f"/{creds.get('dbname', 'lifesync360')}"
 )
 jdbc_props = {
-    "user":   creds["username"],
+    "user":     creds["username"],
     "password": creds["password"],
-    "driver": "org.postgresql.Driver",
+    "driver":   "com.mysql.cj.jdbc.Driver",
 }
 
 # ── recommend_rule 읽기 (활성 규칙만) ─────────────────────────────────────────
+# 실제 스키마: rule_id / category_code / action_code / active_flag
 print("[recommendation] Reading recommend_rule from Aurora")
 df_rules = spark.read.jdbc(
     url=jdbc_url,
     table="recommend_rule",
     properties=jdbc_props,
-).filter(col("is_active") == True).select("rule_id", "target_product", "priority")
+).filter(col("active_flag") == "Y").select("rule_id", "category_code", "action_code", "priority_rank")
 
-active_products = {row.target_product for row in df_rules.collect()}
+active_products = {row.category_code for row in df_rules.collect()}
 print(f"[recommendation] Active products: {active_products}")
 
+# category_code → action_code 매핑 (priority_rank 기준 최우선 규칙)
+df_action = df_rules.groupBy("category_code").agg(
+    F.first("action_code", ignorenulls=True).alias("action_code")
+)
+
 # ── cross_sell_rule 읽기 ──────────────────────────────────────────────────────
+# 실제 스키마: cross_id / base_category / target_category / active_flag
 print("[recommendation] Reading cross_sell_rule from Aurora")
 df_cross_sell = spark.read.jdbc(
     url=jdbc_url,
     table="cross_sell_rule",
     properties=jdbc_props,
-).select("product_id", "action_code")
+).filter(col("active_flag") == "Y").select("base_category", "target_category")
 
 # ── customer360 읽기 ──────────────────────────────────────────────────────────
 customer360_path = f"s3://{S3_CURATED_BUCKET}/customer_360_profile/dt={date_formatted}/"
@@ -101,10 +108,10 @@ df = df.withColumn(
 df = df.withColumn("recommended_products", F.slice(col("rec_array_filtered"), 1, 3))
 df = df.withColumn("recommendation_count", F.size(col("recommended_products")))
 
-# ── cross_sell_rule join → 주 추천 상품 action_code 부여 ──────────────────────
+# ── 주 추천 상품 기준 action_code 부여 (recommend_rule.category_code 매핑) ──
 df = df.withColumn("primary_product", F.element_at(col("recommended_products"), 1))
 df = df.join(
-    df_cross_sell.withColumnRenamed("product_id", "primary_product"),
+    df_action.withColumnRenamed("category_code", "primary_product"),
     on="primary_product",
     how="left",
 )
