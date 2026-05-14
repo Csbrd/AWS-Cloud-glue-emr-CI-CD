@@ -227,7 +227,7 @@ SUBSIDIARIES = [
 
 EMR_APP_ID   = os.environ.get("EMR_APP_ID", "")
 EMR_ROLE_ARN = os.environ.get("EMR_ROLE_ARN", "")
-S3_SCRIPTS   = os.environ.get("S3_SCRIPT_BASE", "s3://lifesync-scripts/emr")
+S3_SCRIPTS   = os.environ.get("S3_SCRIPT_BASE", "s3://lifesync-script-bucket/emr")
 S3_CURATED   = os.environ.get("S3_CURATED_BUCKET", "lifesync-curated")
 
 # ── 7. 마커 파일 생성 ─────────────────────────────────────────────────────────
