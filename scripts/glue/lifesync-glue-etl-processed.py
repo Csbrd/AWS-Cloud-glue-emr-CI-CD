@@ -155,14 +155,23 @@ spark       = glueContext.spark_session
 job         = Job(glueContext)
 job.init(args["JOB_NAME"], args)
 
-date_str  = datetime.now(KST).strftime("%Y-%m-%d")
+def _optional_arg(name, default=None):
+    flag = f"--{name}"
+    if flag in sys.argv:
+        idx = sys.argv.index(flag)
+        if idx + 1 < len(sys.argv):
+            return sys.argv[idx + 1]
+    return default
+
+
+date_str  = _optional_arg("date", datetime.now(KST).strftime("%Y-%m-%d"))
 s3_client = boto3.client("s3")
 
 # ── 1. S3 Raw JSON 읽기 ────────────────────────────────────────────────────────
 # lifesync-identity-enricher Lambda가 global_id 매핑 후 원본 경로에 덮어쓰기 완료
 raw_df = glueContext.create_dynamic_frame.from_options(
     connection_type="s3",
-    connection_options={"paths": [f"s3://{RAW_BUCKET}/{SOURCE}/"]},
+    connection_options={"paths": [f"s3://{RAW_BUCKET}/{SOURCE}/dt={date_str}/"]},
     format="json",
     transformation_ctx=f"{SOURCE}_raw_src",
 ).toDF()
@@ -182,7 +191,7 @@ _consent_schema = StructType([
 ])
 consent_ids = (
     spark.read.schema(_consent_schema)
-         .json(f"s3://{RAW_BUCKET}/consent/")
+         .json(f"s3://{RAW_BUCKET}/consent/dt={date_str}/")
          .filter(
              (F.col("consent_flag") == "Y") &
              (F.col("revoke_dt").isNull() | (F.col("revoke_dt") == "None"))
