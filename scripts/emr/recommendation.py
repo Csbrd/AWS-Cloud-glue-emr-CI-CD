@@ -1,20 +1,20 @@
 import os
 import sys
-import json
-import boto3
+from datetime import datetime, timedelta
 from pyspark.sql import SparkSession
 from pyspark.sql import functions as F
 from pyspark.sql.functions import col, lit, when
+from pyspark.sql.window import Window
 
 BATCH_DATE = os.environ.get("BATCH_DATE")
 if not BATCH_DATE:
     print("ERROR: BATCH_DATE environment variable is required (format: YYYYMMDD)")
     sys.exit(1)
 
-S3_PROCESSED_BUCKET = os.environ.get("S3_PROCESSED_BUCKET", "lifesync-processed")
 S3_CURATED_BUCKET = os.environ.get("S3_CURATED_BUCKET", "lifesync-curated")
 
 date_formatted = f"{BATCH_DATE[:4]}-{BATCH_DATE[4:6]}-{BATCH_DATE[6:8]}"
+valid_until = (datetime.strptime(date_formatted, "%Y-%m-%d") + timedelta(days=30)).strftime("%Y-%m-%d")
 
 spark = SparkSession.builder \
     .appName("recommendation") \
@@ -24,110 +24,114 @@ spark.sparkContext.setLogLevel("WARN")
 
 print(f"[recommendation] Starting job for BATCH_DATE={BATCH_DATE}, date_formatted={date_formatted}")
 
-
-def _get_aurora_creds() -> dict:
-    sm = boto3.client("secretsmanager", region_name="ap-northeast-2")
-    return json.loads(sm.get_secret_value(SecretId="lifesync/aurora/credentials")["SecretString"])
-
-
-# ── Aurora 연결 (Aurora MySQL) ────────────────────────────────────────────────
-print("[recommendation] Fetching Aurora credentials from Secrets Manager")
-creds = _get_aurora_creds()
-jdbc_url = (
-    f"jdbc:mysql://{creds['host']}:{creds.get('port', 3306)}"
-    f"/{creds.get('dbname', 'lifesync360')}"
-)
-jdbc_props = {
-    "user":     creds["username"],
-    "password": creds["password"],
-    "driver":   "com.mysql.cj.jdbc.Driver",
-}
-
-# ── recommend_rule 읽기 (활성 규칙만) ─────────────────────────────────────────
-# 실제 스키마: rule_id / category_code / action_code / active_flag
-print("[recommendation] Reading recommend_rule from Aurora")
-df_rules = spark.read.jdbc(
-    url=jdbc_url,
-    table="recommend_rule",
-    properties=jdbc_props,
-).filter(col("active_flag") == "Y").select("rule_id", "category_code", "action_code", "priority_rank")
-
-active_products = {row.category_code for row in df_rules.collect()}
-print(f"[recommendation] Active products: {active_products}")
-
-# category_code → action_code 매핑 (priority_rank 기준 최우선 규칙)
-df_action = df_rules.groupBy("category_code").agg(
-    F.first("action_code", ignorenulls=True).alias("action_code")
-)
-
-# ── cross_sell_rule 읽기 ──────────────────────────────────────────────────────
-# 실제 스키마: cross_id / base_category / target_category / active_flag
-print("[recommendation] Reading cross_sell_rule from Aurora")
-df_cross_sell = spark.read.jdbc(
-    url=jdbc_url,
-    table="cross_sell_rule",
-    properties=jdbc_props,
-).filter(col("active_flag") == "Y").select("base_category", "target_category")
-
-# ── customer360 읽기 ──────────────────────────────────────────────────────────
 customer360_path = f"s3://{S3_CURATED_BUCKET}/customer_360_profile/dt={date_formatted}/"
+score_mart_path  = f"s3://{S3_CURATED_BUCKET}/score_mart/dt={date_formatted}/"
+
 print(f"[recommendation] Reading customer_360_profile from {customer360_path}")
-df = spark.read.parquet(customer360_path)
+df_c360 = spark.read.parquet(customer360_path).select(
+    "global_id", "income_grade", "invest_total",
+    "insurance_premium", "health_score", "wearable_flag",
+)
 
-# ── 추천 조건 적용 (recommend_rule 활성 목록 기반) ────────────────────────────
-print("[recommendation] Applying recommendation rules")
+print(f"[recommendation] Reading score_mart from {score_mart_path}")
+df_score = spark.read.parquet(score_mart_path).select(
+    "global_id", "customer_grade", "pb_score", "churn_score",
+)
 
-REC_CONDITIONS = {
-    "securities": (col("invest_total") == 0) & (col("income_grade") == "HIGH"),
-    "insurance":  col("insurance_premium") == 0,
-    "healthcare": col("health_score") < 60,
-    "wearable":   (col("wearable_flag") == "N") & col("wearable_flag").isNotNull(),
-}
+df = df_c360.join(df_score, on="global_id", how="left")
+df = df.fillna({"pb_score": 10.0, "churn_score": 0.0, "customer_grade": "CARE"})
 
-for product, condition in REC_CONDITIONS.items():
-    df = df.withColumn(
-        f"rec_{product}",
-        when(lit(product in active_products) & condition, lit(product))
-        .otherwise(lit(None).cast("string"))
+# ── 추천 후보 정의 (recommendation_code, name, score, reason_1, reason_2, condition) ─────
+REC_CANDIDATES = [
+    {
+        "code":     "PB_CENTER",
+        "name":     "PB 프라이빗 뱅킹",
+        "score":    95.0,
+        "reason_1": "VIP 고객 전용 자산관리",
+        "reason_2": "전문 PB 1:1 서비스",
+        "condition": col("customer_grade").isin("VIP", "GOLD") | (col("pb_score") >= 70),
+    },
+    {
+        "code":     "ETF_PRODUCT",
+        "name":     "ETF 투자 상품",
+        "score":    80.0,
+        "reason_1": "투자 포트폴리오 미보유",
+        "reason_2": "분산투자 포트폴리오 추천",
+        "condition": col("invest_total") == 0,
+    },
+    {
+        "code":     "PREMIUM_CARD",
+        "name":     "프리미엄 신용카드",
+        "score":    75.0,
+        "reason_1": "고소득 고객 혜택 최적화",
+        "reason_2": "카드 포인트 및 할인 혜택",
+        "condition": col("income_grade") == "HIGH",
+    },
+    {
+        "code":     "HEALTH_CHECKUP",
+        "name":     "건강검진 패키지",
+        "score":    70.0,
+        "reason_1": "건강 위험 지수 높음",
+        "reason_2": "예방적 건강관리 서비스",
+        "condition": col("health_score") < 60,
+    },
+    {
+        "code":     "INSURANCE_PRODUCT",
+        "name":     "생명보험 상품",
+        "score":    65.0,
+        "reason_1": "보험 미가입 고객",
+        "reason_2": "리스크 헤지 필요",
+        "condition": col("insurance_premium") == 0,
+    },
+    {
+        "code":     "RETENTION_COUPON",
+        "name":     "멤버십 리텐션 쿠폰",
+        "score":    60.0,
+        "reason_1": "이탈 위험 고객",
+        "reason_2": "재참여 유도 혜택",
+        "condition": col("churn_score") >= 50,
+    },
+    {
+        "code":     "BASIC_SERVICE",
+        "name":     "기본 금융 서비스",
+        "score":    50.0,
+        "reason_1": "신규 가입 고객",
+        "reason_2": "lifesync 서비스 소개",
+        "condition": lit(True),
+    },
+]
+
+# ── 조건별 후보 DataFrame 생성 후 UNION ─────────────────────────────────────────
+print("[recommendation] Building recommendation candidates")
+
+candidates = None
+for rec in REC_CANDIDATES:
+    cand = df.filter(rec["condition"]).select(
+        col("global_id"),
+        lit(rec["code"]).alias("recommendation_code"),
+        lit(rec["name"]).alias("recommendation_name"),
+        lit(rec["score"]).alias("recommendation_score"),
+        lit(rec["reason_1"]).alias("reason_1"),
+        lit(rec["reason_2"]).alias("reason_2"),
     )
+    candidates = cand if candidates is None else candidates.union(cand)
 
-# ── 추천 목록 생성 (최대 3개) ─────────────────────────────────────────────────
-df = df.withColumn(
-    "rec_array_raw",
-    F.array(
-        col("rec_securities"),
-        col("rec_insurance"),
-        col("rec_healthcare"),
-        col("rec_wearable"),
-    )
-)
-df = df.withColumn(
-    "rec_array_filtered",
-    F.expr("filter(rec_array_raw, x -> x is not null)")
-)
-df = df.withColumn("recommended_products", F.slice(col("rec_array_filtered"), 1, 3))
-df = df.withColumn("recommendation_count", F.size(col("recommended_products")))
+# ── 고객별 recommendation_score 내림차순으로 rec_rank 부여 (상위 3개만) ────────
+print("[recommendation] Ranking recommendations per customer")
+window_spec = Window.partitionBy("global_id").orderBy(col("recommendation_score").desc())
+candidates = candidates.withColumn("rec_rank", F.rank().over(window_spec))
 
-# ── 주 추천 상품 기준 action_code 부여 (recommend_rule.category_code 매핑) ──
-df = df.withColumn("primary_product", F.element_at(col("recommended_products"), 1))
-df = df.join(
-    df_action.withColumnRenamed("category_code", "primary_product"),
-    on="primary_product",
-    how="left",
-)
-
-recommendation = df.select(
+recommendation = candidates.filter(col("rec_rank") <= 3).select(
     col("global_id"),
-    col("income_grade"),
-    col("invest_total"),
-    col("insurance_premium"),
-    col("health_score"),
-    col("wearable_flag"),
-    col("recommended_products"),
-    col("recommendation_count"),
-    col("primary_product"),
-    col("action_code"),
-    col("dt"),
+    col("rec_rank"),
+    col("recommendation_code"),
+    col("recommendation_name"),
+    col("recommendation_score"),
+    col("reason_1"),
+    col("reason_2"),
+    lit(valid_until).alias("valid_until"),
+    lit(date_formatted).alias("process_dt"),
+    lit(date_formatted).alias("dt"),
 )
 
 output_path = f"s3://{S3_CURATED_BUCKET}/recommendation_mart/dt={date_formatted}/"

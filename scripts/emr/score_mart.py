@@ -26,99 +26,113 @@ customer360_path = f"s3://{S3_CURATED_BUCKET}/customer_360_profile/dt={date_form
 print(f"[score_mart] Reading customer_360_profile from {customer360_path}")
 df = spark.read.parquet(customer360_path)
 
-print("[score_mart] Calculating LifeSync Score components")
+print("[score_mart] Calculating LifeSync Score components (설계 문서 기준)")
 
-# ── financial_score ───────────────────────────────────────────────────────────
-# score = financial + health + relationship + growth - risk
-df = df.withColumn("score_balance",  least(lit(15.0), col("latest_balance") / lit(1_000_000.0)))
-df = df.withColumn("score_invest",   least(lit(10.0), col("invest_total") / lit(5_000_000.0)))
-df = df.withColumn("score_card",     least(lit(10.0), col("card_total_spend") / lit(2_000_000.0)))
-df = df.withColumn("score_insurance",
-    when(col("insurance_premium") > 0, lit(5.0)).otherwise(lit(0.0))
-)
-df = df.withColumn(
-    "financial_score",
-    col("score_balance") + col("score_invest") + col("score_card") + col("score_insurance")
-)
+# ── financial_score (max 40) ───────────────────────────────────────────────────
+# 1) balance_score (max 15)
+balance_s = (when(col("latest_balance") >= 50_000_000, lit(15))
+             .when(col("latest_balance") >= 30_000_000, lit(12))
+             .when(col("latest_balance") >= 10_000_000, lit(8))
+             .when(col("latest_balance") >= 3_000_000,  lit(5))
+             .otherwise(lit(2)))
+df = df.withColumn("balance_score", balance_s.cast("double"))
 
-# ── health_score ──────────────────────────────────────────────────────────────
-# activity + bio + lifestyle + prevent - disease_penalty - visit_penalty
-df = df.withColumn("activity_score",
-    when(col("wearable_flag") == "Y", lit(5.0)).otherwise(lit(0.0))
-)
-df = df.withColumn("bio_score",
-    when((col("bmi") >= lit(18.5)) & (col("bmi") < lit(25.0)), lit(5.0)).otherwise(lit(2.0))
-)
-df = df.withColumn("lifestyle_score",
-    col("health_score") * lit(0.05)
-)
-df = df.withColumn("prevent_score",
-    when((col("insurance_count") + col("online_insurance_count")) > 0, lit(3.0)).otherwise(lit(0.0))
-)
-df = df.withColumn("disease_penalty",
-    when(col("health_score") < lit(40.0), lit(3.0)).otherwise(lit(0.0))
-)
-df = df.withColumn("visit_penalty",
-    least(lit(5.0), col("hospital_visit_count") * lit(0.5))
-)
-df = df.withColumn(
-    "health_sub_score",
-    col("activity_score") + col("bio_score") + col("lifestyle_score")
-    + col("prevent_score") - col("disease_penalty") - col("visit_penalty")
-)
+# 2) card_score (max 10)
+card_s = (when(col("card_total_spend") >= 5_000_000, lit(10))
+          .when(col("card_total_spend") >= 3_000_000, lit(8))
+          .when(col("card_total_spend") >= 1_500_000, lit(5))
+          .when(col("card_total_spend") >= 500_000,   lit(3))
+          .otherwise(lit(1)))
+df = df.withColumn("card_score", card_s.cast("double"))
 
-# ── relationship_score ────────────────────────────────────────────────────────
-df = df.withColumn("rel_bank",
-    when(col("bank_tx_count") > 0, lit(2.0)).otherwise(lit(0.0))
-)
-df = df.withColumn("rel_card",
-    when(col("card_tx_count") > 0, lit(2.0)).otherwise(lit(0.0))
-)
-df = df.withColumn("rel_invest",
-    when(col("invest_product_count") > 0, lit(3.0)).otherwise(lit(0.0))
-)
-df = df.withColumn("rel_insurance",
-    when((col("insurance_count") + col("online_insurance_count")) > 0, lit(3.0)).otherwise(lit(0.0))
-)
-df = df.withColumn("rel_hospital",
-    when(col("hospital_visit_count") > 0, lit(2.0)).otherwise(lit(0.0))
-)
-df = df.withColumn(
-    "relationship_score",
-    col("rel_bank") + col("rel_card") + col("rel_invest") + col("rel_insurance") + col("rel_hospital")
-)
+# 3) invest_score (max 15)
+invest_s = (when(col("invest_total") >= 100_000_000, lit(15))
+            .when(col("invest_total") >= 50_000_000,  lit(12))
+            .when(col("invest_total") >= 30_000_000,  lit(8))
+            .when(col("invest_total") >= 10_000_000,  lit(5))
+            .otherwise(lit(1)))
+df = df.withColumn("invest_score", invest_s.cast("double"))
 
-# ── growth_score ──────────────────────────────────────────────────────────────
-df = df.withColumn("growth_bank",   least(lit(4.0), col("bank_tx_count") / lit(10.0)))
-df = df.withColumn("growth_card",   least(lit(3.0), col("card_tx_count") / lit(10.0)))
-df = df.withColumn("growth_invest", least(lit(3.0), col("invest_total") / lit(10_000_000.0)))
+df = df.withColumn("financial_score",
+    col("balance_score") + col("card_score") + col("invest_score"))
+
+# ── health_sub_score (max 25) ─────────────────────────────────────────────────
+# steps_score (max 10): wearable_flag proxy — 실 파이프라인에서는 avg_steps 사용
+steps_s = (when(col("wearable_flag") == "Y", lit(8))
+           .otherwise(lit(1)))
+df = df.withColumn("steps_score", steps_s.cast("double"))
+
+# wellness_score (max 10): healthcare.health_score (0~100) → 구간별 점수
+wellness_s = (when(col("health_score") >= 90, lit(10))
+              .when(col("health_score") >= 80, lit(8))
+              .when(col("health_score") >= 70, lit(6))
+              .when(col("health_score") >= 60, lit(3))
+              .otherwise(lit(1)))
+df = df.withColumn("wellness_score", wellness_s.cast("double"))
+
+# stress_sleep_score (max 5): wearable 데이터 없어 중간값 기본 적용
+df = df.withColumn("stress_sleep_score", lit(3.0))
+
+df = df.withColumn("health_sub_score",
+    col("steps_score") + col("wellness_score") + col("stress_sleep_score"))
+
+# ── relationship_score (max 15) ───────────────────────────────────────────────
+# 이용 계열사 수 (은행/카드/증권/보험/온보험/병원)
+affiliate_cnt_expr = (
+    when(col("bank_tx_count")          > 0, lit(1)).otherwise(lit(0)) +
+    when(col("card_tx_count")          > 0, lit(1)).otherwise(lit(0)) +
+    when(col("invest_product_count")   > 0, lit(1)).otherwise(lit(0)) +
+    when(col("insurance_count")        > 0, lit(1)).otherwise(lit(0)) +
+    when(col("online_insurance_count") > 0, lit(1)).otherwise(lit(0)) +
+    when(col("hospital_visit_count")   > 0, lit(1)).otherwise(lit(0))
+)
+df = df.withColumn("affiliate_cnt", affiliate_cnt_expr)
+
+affiliate_s = (when(col("affiliate_cnt") >= 5, lit(10))
+               .when(col("affiliate_cnt") >= 3, lit(7))
+               .when(col("affiliate_cnt") >= 2, lit(4))
+               .otherwise(lit(2)))
+df = df.withColumn("affiliate_score", affiliate_s.cast("double"))
+
+# consent_score: customer360에 consent_ratio 없어 0 적용
+# 실 파이프라인에서는 On-Prem MySQL consent 테이블 기반 consent_ratio 사용
+df = df.withColumn("consent_score", lit(0.0))
+
+df = df.withColumn("relationship_score",
+    col("affiliate_score") + col("consent_score"))
+
+# ── growth_score (max 10) ─────────────────────────────────────────────────────
+# 최근 3개월 증가 추세 proxy: 투자/건강/소비 보유 여부로 추정
+# 실 파이프라인에서는 90d 증가율(invest_growth_90d, spend_growth_90d 등) 사용
 df = df.withColumn(
     "growth_score",
-    col("growth_bank") + col("growth_card") + col("growth_invest")
+    when(
+        (col("invest_total") > 0) & (col("health_score") >= 70), lit(10.0)
+    ).when(
+        (col("card_total_spend") > 0) & (col("invest_total") > 0), lit(7.0)
+    ).when(
+        (col("invest_total") > 0) | (col("card_total_spend") > 0), lit(4.0)
+    ).otherwise(lit(1.0))
 )
 
-# ── risk_score ────────────────────────────────────────────────────────────────
-df = df.withColumn("risk_hospital",
-    when(col("hospital_visit_count") > lit(10), lit(5.0))
-    .when(col("hospital_visit_count") > lit(5),  lit(2.0))
-    .otherwise(lit(0.0))
-)
-df = df.withColumn("risk_bmi",
-    when(col("bmi") >= lit(30.0), lit(3.0)).otherwise(lit(0.0))
-)
-df = df.withColumn("risk_health",
-    when(col("health_score") < lit(40.0), lit(5.0)).otherwise(lit(0.0))
-)
-df = df.withColumn(
-    "risk_score",
-    col("risk_hospital") + col("risk_bmi") + col("risk_health")
-)
+# ── risk_score (최대 20 차감) ─────────────────────────────────────────────────
+# 1) 건강 리스크 (max 15)
+visit_risk  = when(col("hospital_visit_count") > 6, lit(5.0)).otherwise(lit(0.0))
+health_risk = when(col("health_score") < 40, lit(10.0)).otherwise(lit(0.0))
+df = df.withColumn("health_risk", visit_risk + health_risk)
 
-# ── lifesync_score = base + financial + health + relationship + growth - risk ─
+# 2) 금융 리스크 (max 15): 잔액급감/카드연체 데이터 없어 0 적용
+# 실 파이프라인에서는 asset_drop_ratio, card_drop_ratio 사용
+df = df.withColumn("financial_risk", lit(0.0))
+
+df = df.withColumn("risk_score",
+    least(lit(20.0), col("health_risk") + col("financial_risk")))
+
+# ── lifesync_score (base 없이 합산, 설계 문서 기준) ───────────────────────────
+# = financial + health + relationship + growth - risk  (max 100, min 0)
 df = df.withColumn(
     "raw_score",
-    lit(50.0)
-    + col("financial_score")
+    col("financial_score")
     + col("health_sub_score")
     + col("relationship_score")
     + col("growth_score")
@@ -140,16 +154,32 @@ df = df.withColumn(
     .otherwise(lit("CARE"))
 )
 
+# vip_score = lifesync_score
+df = df.withColumn("vip_score", col("lifesync_score"))
+
+# pb_score: 총자산 기반 PB 적합도 점수
+total_asset_expr = col("latest_balance") + col("invest_total")
+pb_s = (when(total_asset_expr >= 500_000_000, lit(100.0))
+        .when(total_asset_expr >= 300_000_000, lit(85.0))
+        .when(total_asset_expr >= 100_000_000, lit(70.0))
+        .when(total_asset_expr >= 50_000_000,  lit(50.0))
+        .when(total_asset_expr >= 10_000_000,  lit(30.0))
+        .otherwise(lit(10.0)))
+df = df.withColumn("pb_score", pb_s)
+
+# churn_score: risk_score 기반 이탈 위험 점수 (0~100 정규화)
+df = df.withColumn("churn_score", F.round(col("risk_score") / lit(20.0) * lit(100.0), 1))
+
 score_mart = df.select(
     col("global_id"),
     col("lifesync_score"),
+    col("vip_score"),
+    col("pb_score"),
+    F.coalesce(col("health_score"), lit(50.0)).cast("double").alias("health_score"),
+    col("churn_score"),
     col("customer_grade"),
-    col("financial_score"),
-    col("health_sub_score"),
-    col("relationship_score"),
-    col("growth_score"),
-    col("risk_score"),
-    col("dt")
+    lit(date_formatted).alias("score_dt"),
+    col("dt"),
 )
 
 output_path = f"s3://{S3_CURATED_BUCKET}/score_mart/dt={date_formatted}/"

@@ -1,8 +1,8 @@
-﻿import os
+import os
 import sys
 from pyspark.sql import SparkSession
 from pyspark.sql import functions as F
-from pyspark.sql.functions import col, lit, when
+from pyspark.sql.functions import col, lit, when, least, greatest
 
 BATCH_DATE = os.environ.get("BATCH_DATE")
 if not BATCH_DATE:
@@ -10,7 +10,7 @@ if not BATCH_DATE:
     sys.exit(1)
 
 S3_PROCESSED_BUCKET = os.environ.get("S3_PROCESSED_BUCKET", "lifesync-processed")
-S3_CURATED_BUCKET = os.environ.get("S3_CURATED_BUCKET", "lifesync-curated")
+S3_CURATED_BUCKET   = os.environ.get("S3_CURATED_BUCKET",   "lifesync-curated")
 
 date_formatted = f"{BATCH_DATE[:4]}-{BATCH_DATE[4:6]}-{BATCH_DATE[6:8]}"
 
@@ -39,7 +39,6 @@ df_customer_master = spark.read.parquet(customer_master_path).select(
 
 print("[health_mart] Aggregating healthcare data")
 healthcare_agg = df_healthcare.groupBy("global_id").agg(
-    F.avg("health_score").alias("health_score"),
     F.avg("bmi").alias("bmi"),
 )
 
@@ -47,14 +46,19 @@ print("[health_mart] Aggregating hospital data")
 hospital_agg = df_hospital.groupBy("global_id").agg(
     F.count("*").alias("hospital_visit_count"),
     F.sum("treatment_cost").alias("hospital_total_cost"),
-    F.countDistinct("department").alias("department_count")
+    F.max(
+        when(col("diagnosis_code").isin("E11", "I10"), lit(1)).otherwise(lit(0))
+    ).alias("has_chronic"),
 )
 
 print("[health_mart] Aggregating wearable data")
 wearable_agg = df_wearable.groupBy("global_id").agg(
     F.avg("heart_rate").alias("avg_heart_rate"),
     F.avg("steps").alias("avg_steps"),
-    F.max("record_date").alias("last_sync_date")
+    F.avg("stress_score").alias("avg_stress"),
+    F.avg("sleep_hours").alias("avg_sleep"),
+    F.avg("spo2").alias("spo2"),
+    F.max("record_date").alias("last_sync_date"),
 )
 
 print("[health_mart] Joining all datasets (base: customer_master)")
@@ -63,25 +67,112 @@ df = df_customer_master \
     .join(hospital_agg,   on="global_id", how="left") \
     .join(wearable_agg,   on="global_id", how="left")
 
+# healthcare 데이터 존재 여부 (fillna 전에 판단)
+df = df.withColumn("has_healthcare", when(col("bmi").isNotNull(), lit(1)).otherwise(lit(0)))
+
 df = df.fillna({
     "hospital_visit_count": 0,
-    "hospital_total_cost": 0.0,
-    "department_count": 0,
-    "avg_heart_rate": 0.0,
-    "avg_steps": 0.0,
-    "health_score": 50.0,
-    "bmi": 22.0
+    "hospital_total_cost":  0.0,
+    "has_chronic":          0,
+    "avg_heart_rate":       75.0,
+    "avg_steps":            5000.0,
+    "avg_stress":           40.0,
+    "avg_sleep":            6.5,
+    "bmi":                  22.0,
+    "spo2":                 98.0,
 })
 
-print("[health_mart] Computing health_grade")
+# ── Health Score 공식 (설계 문서 기준) ─────────────────────────────────────────
+
+print("[health_mart] Computing health_score (설계 문서 공식)")
+
+# 1) activity_score (max 25)
+#    steps_score: avg_steps 구간
+#    workout_score: avg_steps 기반 주간 운동일수 프록시 (직접 데이터 없음)
+steps_s   = (when(col("avg_steps") >= 12000, lit(15))
+             .when(col("avg_steps") >= 10000, lit(12))
+             .when(col("avg_steps") >= 7000,  lit(8))
+             .when(col("avg_steps") >= 5000,  lit(5))
+             .otherwise(lit(2)))
+workout_s = (when(col("avg_steps") >= 10000, lit(10))
+             .when(col("avg_steps") >= 7000,  lit(7))
+             .when(col("avg_steps") >= 5000,  lit(4))
+             .otherwise(lit(1)))
+df = df.withColumn("activity_score", steps_s + workout_s)
+
+# 2) bio_score (max 25)
+#    hr_score + spo2_score(기본값 8, 데이터 없음) + bmi_score
+hr_s  = (when(col("avg_heart_rate") <= 75,  lit(10))
+         .when(col("avg_heart_rate") <= 90,  lit(8))
+         .when(col("avg_heart_rate") <= 110, lit(5))
+         .otherwise(lit(2)))
+spo2_s = lit(8)  # spo2 processed 데이터 미수집 → 95이상 구간 보수적 기본값
+bmi_s  = (when((col("bmi") >= 18.5) & (col("bmi") <= 24.9), lit(5))
+          .when(col("bmi") <= 29.9, lit(3))
+          .otherwise(lit(1)))
+df = df.withColumn("bio_score", hr_s + spo2_s + bmi_s)
+
+# 3) lifestyle_score (max 15)
+stress_s = (when(col("avg_stress") <= 30, lit(8))
+            .when(col("avg_stress") <= 60, lit(5))
+            .otherwise(lit(2)))
+sleep_s  = (when((col("avg_sleep") >= 7.0) & (col("avg_sleep") <= 8.0), lit(7))
+            .when(col("avg_sleep") >= 6.0, lit(5))
+            .when(col("avg_sleep") >= 5.0, lit(3))
+            .otherwise(lit(1)))
+df = df.withColumn("lifestyle_score", stress_s + sleep_s)
+
+# 4) prevent_score (max 15)
+checkup_s   = when(col("has_healthcare") == 1, lit(10)).otherwise(lit(0))
+habit_bonus = when(col("avg_steps") >= 10000, lit(5)).otherwise(lit(0))
+df = df.withColumn("prevent_score", checkup_s + habit_bonus)
+
+# 5) disease_penalty (max 15)
+#    base_risk = min(100, max(0, (age-20)*0.8 + visit_count*10))
+#    만성질환(E11/I10) 있으면 base_risk 최소 80으로 상향
+base_risk_expr = least(
+    lit(100),
+    greatest(
+        lit(0),
+        (greatest(col("age").cast("double") - lit(20.0), lit(0.0)) * lit(0.8)
+         + col("hospital_visit_count").cast("double") * lit(10.0)).cast("int"),
+    ),
+)
+eff_risk_expr  = when(col("has_chronic") == 1, greatest(base_risk_expr, lit(80))).otherwise(base_risk_expr)
+disease_base_p = (when(eff_risk_expr >= 80, lit(15))
+                  .when(eff_risk_expr >= 60, lit(10))
+                  .when(eff_risk_expr >= 40, lit(5))
+                  .otherwise(lit(0)))
+chronic_flag_p = when(col("has_chronic") == 1, lit(5)).otherwise(lit(0))
+df = df.withColumn("disease_penalty", least(lit(15), disease_base_p + chronic_flag_p))
+
+# 6) visit_penalty (max 10)
+visit_p = (when(col("hospital_visit_count") >= 6, lit(10))
+           .when(col("hospital_visit_count") >= 4, lit(7))
+           .when(col("hospital_visit_count") >= 2, lit(3))
+           .otherwise(lit(0)))
+df = df.withColumn("visit_penalty", visit_p)
+
+# 7) health_score_raw (10-80) → 정규화 (13-100)
+raw_expr = (col("activity_score") + col("bio_score") + col("lifestyle_score")
+            + col("prevent_score") - col("disease_penalty") - col("visit_penalty"))
+health_score_raw = least(lit(80), greatest(lit(10), raw_expr))
 df = df.withColumn(
-    "health_grade",
-    when(col("health_score") < 60, lit("RISK"))
-    .when(col("health_score") < 80, lit("NORMAL"))
-    .otherwise(lit("GOOD"))
+    "health_score",
+    F.round(health_score_raw.cast("double") / lit(80.0) * lit(100.0)).cast("int"),
 )
 
-print("[health_mart] Computing bmi_category")
+# ── 5단계 등급 (설계 문서 기준) ───────────────────────────────────────────────
+df = df.withColumn(
+    "health_grade",
+    when(col("health_score") >= 90, lit("EXCELLENT"))
+    .when(col("health_score") >= 80, lit("GOOD"))
+    .when(col("health_score") >= 65, lit("NORMAL"))
+    .when(col("health_score") >= 50, lit("WARNING"))
+    .otherwise(lit("RISK"))
+)
+
+# ── BMI 카테고리 ──────────────────────────────────────────────────────────────
 df = df.withColumn(
     "bmi_category",
     when(col("bmi") < 18.5, lit("UNDERWEIGHT"))
@@ -90,24 +181,33 @@ df = df.withColumn(
     .otherwise(lit("OBESE"))
 )
 
+df = df.withColumn("health_risk", (lit(100.0) - col("health_score")).cast("double"))
+
+df = df.withColumn(
+    "next_health_action",
+    when(col("health_grade") == "RISK",    lit("EMERGENCY_CARE"))
+    .when(col("health_grade") == "WARNING", lit("HEALTH_CHECKUP"))
+    .when(col("has_chronic") == 1,          lit("CHRONIC_MANAGEMENT"))
+    .when(col("avg_steps") < 5000,          lit("EXERCISE_PROGRAM"))
+    .otherwise(lit("HEALTH_MAINTENANCE"))
+)
+
 df = df.withColumn("dt", lit(date_formatted))
 
 health_mart = df.select(
     col("global_id"),
-    col("age"),
-    col("gender"),
-    col("region"),
+    col("avg_steps"),
+    col("avg_heart_rate").alias("avg_hr"),
+    col("spo2"),
+    col("bmi"),
+    col("avg_stress").alias("stress"),
+    col("avg_sleep").alias("sleep_avg"),
+    col("hospital_visit_count").alias("hospital_visit_cnt"),
+    col("health_risk"),
     col("health_score"),
     col("health_grade"),
-    col("bmi"),
-    col("bmi_category"),
-    col("avg_heart_rate"),
-    col("avg_steps"),
-    col("last_sync_date"),
-    col("hospital_visit_count"),
-    col("hospital_total_cost"),
-    col("department_count"),
-    col("dt")
+    col("next_health_action"),
+    col("dt"),
 )
 
 output_path = f"s3://{S3_CURATED_BUCKET}/health_mart/dt={date_formatted}/"
