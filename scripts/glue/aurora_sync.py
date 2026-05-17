@@ -23,6 +23,9 @@ job   = Job(glue)
 job.init(JOB_NAME, args)
 
 spark.sparkContext.setLogLevel("WARN")
+
+# BATCH_DATE는 Glue Job 파라미터(YYYY-MM-DD)로만 전달되며, datetime.strptime으로 포맷 검증
+datetime.strptime(BATCH_DATE, "%Y-%m-%d")
 print(f"[aurora_sync] BATCH_DATE={BATCH_DATE}")
 
 
@@ -50,7 +53,7 @@ jdbc_props = {
 # recommended_at 기준 당일 데이터만 추출 (pushdown predicate)
 print(f"[aurora_sync] Reading customer_recommend_history for {BATCH_DATE}")
 
-pushdown = f"(SELECT * FROM customer_recommend_history WHERE DATE(recommended_at) = '{BATCH_DATE}') t"
+pushdown = f"(SELECT * FROM customer_recommend_history WHERE DATE(recommended_at) = '{BATCH_DATE}') t"  # nosec B608
 
 df = spark.read.jdbc(
     url=jdbc_url,
