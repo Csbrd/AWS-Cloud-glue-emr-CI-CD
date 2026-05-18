@@ -9,7 +9,6 @@ from awsglue.transforms import *
 from awsglue.utils import getResolvedOptions
 from awsglue.context import GlueContext
 from awsglue.job import Job
-from awsglue.dynamicframe import DynamicFrame
 from pyspark.context import SparkContext
 from pyspark.sql import functions as F
 from pyspark.sql.types import LongType, StringType, DateType, DoubleType, StructType, StructField
@@ -218,15 +217,15 @@ selected_df = normalized_df.select(cfg["keep_cols"])
 # ── 5. 중복 제거 ───────────────────────────────────────────────────────────────
 deduped_df = selected_df.dropDuplicates(cfg["pk_cols"])
 
-# ── 6. S3 Processed에 Parquet 저장 (Snappy 압축) ──────────────────────────────
-glueContext.write_dynamic_frame.from_options(
-    frame=DynamicFrame.fromDF(deduped_df, glueContext, f"{SOURCE}_output"),
-    connection_type="s3",
-    connection_options={"path": f"s3://{PROC_BUCKET}/{SOURCE}/"},
-    format="parquet",
-    format_options={"compression": "snappy"},
-    transformation_ctx=f"{SOURCE}_output",
-)
+# ── 6. S3 Processed에 Parquet 저장 (Snappy 압축, dt= 파티션) ──────────────────
+# EMR이 읽는 경로: s3://lifesync-processed/{source}/dt={date_str}/
+deduped_df = deduped_df.withColumn("dt", F.lit(date_str))
+
+deduped_df.write \
+    .mode("overwrite") \
+    .partitionBy("dt") \
+    .option("compression", "snappy") \
+    .parquet(f"s3://{PROC_BUCKET}/{SOURCE}/")
 
 # ── 7. 마커 파일 생성 → EMR 트리거 감지용 ────────────────────────────────────
 SUBSIDIARIES = [

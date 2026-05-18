@@ -31,12 +31,6 @@ df_healthcare = read_processed("healthcare")
 df_hospital   = read_processed("hospital")
 df_wearable   = read_processed("wearable")
 
-print("[health_mart] Reading customer_master for demographics")
-customer_master_path = f"s3://{S3_CURATED_BUCKET}/customer_master/"
-df_customer_master = spark.read.parquet(customer_master_path).select(
-    "global_id", "age", "gender", "region"
-)
-
 print("[health_mart] Aggregating healthcare data")
 healthcare_agg = df_healthcare.groupBy("global_id").agg(
     F.avg("bmi").alias("bmi"),
@@ -61,8 +55,16 @@ wearable_agg = df_wearable.groupBy("global_id").agg(
     F.max("record_date").alias("last_sync_date"),
 )
 
-print("[health_mart] Joining all datasets (base: customer_master)")
-df = df_customer_master \
+print("[health_mart] Building base global_id list from UNION of health-related processed data")
+base_ids = (
+    df_healthcare.select("global_id")
+    .union(df_hospital.select("global_id"))
+    .union(df_wearable.select("global_id"))
+    .distinct()
+)
+
+print("[health_mart] Joining all datasets on global_id")
+df = base_ids \
     .join(healthcare_agg, on="global_id", how="left") \
     .join(hospital_agg,   on="global_id", how="left") \
     .join(wearable_agg,   on="global_id", how="left")
@@ -128,15 +130,11 @@ habit_bonus = when(col("avg_steps") >= 10000, lit(5)).otherwise(lit(0))
 df = df.withColumn("prevent_score", checkup_s + habit_bonus)
 
 # 5) disease_penalty (max 15)
-#    base_risk = min(100, max(0, (age-20)*0.8 + visit_count*10))
+#    base_risk = min(100, visit_count * 10)
 #    만성질환(E11/I10) 있으면 base_risk 최소 80으로 상향
 base_risk_expr = least(
     lit(100),
-    greatest(
-        lit(0),
-        (greatest(col("age").cast("double") - lit(20.0), lit(0.0)) * lit(0.8)
-         + col("hospital_visit_count").cast("double") * lit(10.0)).cast("int"),
-    ),
+    (col("hospital_visit_count").cast("double") * lit(10.0)).cast("int"),
 )
 eff_risk_expr  = when(col("has_chronic") == 1, greatest(base_risk_expr, lit(80))).otherwise(base_risk_expr)
 disease_base_p = (when(eff_risk_expr >= 80, lit(15))

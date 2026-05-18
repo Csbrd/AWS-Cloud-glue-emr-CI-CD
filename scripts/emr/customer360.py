@@ -27,14 +27,7 @@ def read_processed(subsidiary):
     print(f"[customer360] Reading {subsidiary} from {path}")
     return spark.read.parquet(path)
 
-print("[customer360] Reading customer_master (demographics base)")
-customer_master_path = f"s3://{S3_CURATED_BUCKET}/customer_master/"
-df_customer_master = spark.read.parquet(customer_master_path).select(
-    "global_id", "gender", "age", "region",
-    "job_group", "income_grade", "asset_grade", "wearable_flag"
-)
-
-print("[customer360] Reading all 7 subsidiary datasets")
+print("[customer360] Reading all 8 subsidiary datasets")
 df_bank             = read_processed("bank")
 df_card             = read_processed("card")
 df_securities       = read_processed("securities")
@@ -42,6 +35,7 @@ df_insurance        = read_processed("insurance")
 df_online_insurance = read_processed("online_insurance")
 df_healthcare       = read_processed("healthcare")
 df_hospital         = read_processed("hospital")
+df_wearable         = read_processed("wearable")
 
 print("[customer360] Aggregating bank data")
 bank_agg = df_bank.groupBy("global_id").agg(
@@ -89,8 +83,25 @@ hospital_agg = df_hospital.groupBy("global_id").agg(
     F.sum("treatment_cost").alias("hospital_total_cost")
 )
 
-print("[customer360] Joining all datasets on global_id (base: customer_master)")
-base = df_customer_master
+print("[customer360] Building base global_id list from UNION of all 8 processed subsidiaries")
+base_ids = (
+    df_bank.select("global_id")
+    .union(df_card.select("global_id"))
+    .union(df_securities.select("global_id"))
+    .union(df_insurance.select("global_id"))
+    .union(df_online_insurance.select("global_id"))
+    .union(df_healthcare.select("global_id"))
+    .union(df_hospital.select("global_id"))
+    .union(df_wearable.select("global_id"))
+    .distinct()
+)
+
+# wearable 보유 여부 플래그 (score_mart steps_score 계산에 사용)
+wearable_ids = df_wearable.select("global_id").distinct() \
+    .withColumn("wearable_flag", lit("Y"))
+
+print("[customer360] Joining all datasets on global_id")
+base = base_ids
 base = base.join(healthcare_agg,        on="global_id", how="left")
 base = base.join(bank_agg,              on="global_id", how="left")
 base = base.join(card_agg,              on="global_id", how="left")
@@ -98,6 +109,7 @@ base = base.join(securities_agg,        on="global_id", how="left")
 base = base.join(insurance_agg,         on="global_id", how="left")
 base = base.join(online_insurance_agg,  on="global_id", how="left")
 base = base.join(hospital_agg,          on="global_id", how="left")
+base = base.join(wearable_ids,          on="global_id", how="left")
 
 base = base.fillna({
     "bank_tx_count": 0,
@@ -118,7 +130,7 @@ base = base.fillna({
     "hospital_total_cost": 0.0,
     "health_score": 50.0,
     "bmi": 22.0,
-    "wearable_flag": "N"
+    "wearable_flag": "N",
 })
 
 base = base.withColumn("dt", lit(date_formatted))
